@@ -1,5 +1,6 @@
 # Birdie
 
-[Uploaded the EMNLP 2024 Poster](https://github.com/samblouir/birdie/blob/main/poster_emnlp_2024.pdf)
+~[See you there!](https://github.com/samblouir/birdie/blob/main/birdie_emnlp_2024_poster.jpg?raw=true)
 
-See you there!
+
+
