@@ -1,6 +1,7 @@
 # Birdie
 
 Paper accepted to EMNLP 2024!
+Please see the attached file "Birdie__Advancing_State_Space_Models_with_Reward_Driven_Objectives_and_Curricula.pdf"
 
 
 Code coming soon.
