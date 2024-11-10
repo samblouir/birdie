@@ -10,8 +10,9 @@ The latest version of the paper is available at: https://arxiv.org/abs/2411.0103
 # Birdie
 Planned integrations with HuggingFace and EasyDeL for ease-of-use.
 
-**The codebase is being refactored and will be updated soon.**
+**The codebase is being refactored and will be updated soon. Currently, it is bring-your-own-model.**
 
+## Existing Features:
 Example usage:
 ```python
 
