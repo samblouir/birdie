@@ -22,6 +22,7 @@ tokenizer = huggingface_tokenizer.get_tokenizer("Your Tokenizer")
 ds = load_dataset("roneneldan/TinyStories", streaming=True,)
 
 
+from birdie.all_in_one import Birdie
 config = {
 	"tokenizer": tokenizer,
 	"pretraining_objectives": "birdie",
@@ -32,9 +33,6 @@ config = {
 	"ds_train": ds['train'],
 	"ds_validation": ds['validation'],
 }
-
-
-from birdie.all_in_one import Birdie
 birdie = Birdie(config)
 
 for step_idx in range(10_000):
