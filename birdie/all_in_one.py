@@ -617,6 +617,9 @@ class Birdie:
 		next_sample = next(self.ds_train_iterator)
 		result = current_objective(next_sample, remaining_space=self.max_seq_length)
 
+		if result['status'] == "error":
+			return self.get_next_training_sample()
+
 		input_ids = np.pad(result['input_ids'], (0, self.max_seq_length - len(result['input_ids'])), constant_values=0)
 		labels = np.pad(result['labels'], (0, self.max_seq_length - len(result['labels'])), constant_values=0)
 
