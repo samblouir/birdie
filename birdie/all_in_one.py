@@ -628,6 +628,9 @@ class Birdie:
 
 	def get_validation_samples(self):
 		return self.validation_samples
+	
+	def get_validation_losses(self):
+		return self.new_losses
 
 
 
