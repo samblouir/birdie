@@ -606,7 +606,7 @@ class Birdie:
 			while True:
 				iterator = iter(dataset)
 				for item in iterator:
-					yield item
+					yield item['text']
 
 		self.ds_train_iterator = generator(self.train_dataset)
 		self.ds_valid_iterator = generator(self.validation_dataset)
