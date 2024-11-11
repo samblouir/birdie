@@ -49,21 +49,17 @@ What this code does is:
 
 from flask import Flask, request, Response
 import dill
-import server_dest
+import api
 import os
 import sys
 import traceback
 import jax
 
-class ModelWrapper():
-	def __init__(self, model=None, loaded_model_tag=None):
-		self.model = model
-		self.loaded_model_tag = loaded_model_tag
-	
-wrapper = ModelWrapper()
 
 print_once = True
 pretty_name = __file__.rsplit("/", 1)[-1]
+
+model = None 
 
 app = Flask(__name__)
 @app.route('/data', methods=['POST'])
@@ -90,7 +86,7 @@ def data():
 			return Response(y, status=200, mimetype='application/octet-stream')
 		
 		if model is None:
-			model = model.get_model(**kwargs)
+			model = api.ModelWrapper(**kwargs)
 			loaded_model_tag = kwargs['model_tag']
 			
 		if loaded_model_tag != kwargs['model_tag']:
@@ -106,7 +102,7 @@ def data():
 			# loaded_model_tag = kwargs['model_tag']
 
 		# This function accepts the 
-		rv = server_dest.predict(model, **kwargs,)
+		rv = model(**kwargs,)
 
 		x = dill.dumps(rv)
 

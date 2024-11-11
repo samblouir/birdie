@@ -67,9 +67,9 @@ class Model(nnx.Module):
 		self.linear = nnx.Linear(din, dmid, rngs=rngs)
 		self.linear_out = nnx.Linear(dmid, dout, rngs=rngs)
 
-def __call__(self, x):
-	x = nnx.relu(self.dropout(self.bn(self.linear(x))))
-	return self.linear_out(x)
+	def __call__(self, x):
+		x = nnx.relu(self.dropout(self.bn(self.linear(x))))
+		return self.linear_out(x)
 
 
 @nnx.jit  # automatic state management for JAX transforms
@@ -92,3 +92,4 @@ def get_model(**kwargs):
 
 	model = Model(2, 64, 3, rngs=nnx.Rngs(0))  # eager initialization
 	# optimizer = nnx.Optimizer(model, optax.adam(1e-3))  # reference sharing	
+	return model
