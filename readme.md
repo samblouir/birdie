@@ -16,10 +16,17 @@ Planned integrations with HuggingFace and EasyDeL for ease-of-use.
 Example usage:
 ```python
 
+import tokenizer as huggingface_tokenizer
+from loss_fns import log_softmax_cross_entropy
+
+
 model = "Your Model"
 tokenizer = huggingface_tokenizer.get_tokenizer("Your Tokenizer")
 
-ds = load_dataset("roneneldan/TinyStories", streaming=True,)
+
+
+from datasets import load_dataset
+dataset = load_dataset("roneneldan/TinyStories", streaming=True,)
 
 
 from birdie.all_in_one import Birdie
@@ -30,8 +37,10 @@ config = {
 	"total_steps": 10_000,
 	"steps_between_evaluations": 500,
 
-	"ds_train": ds['train'],
-	"ds_validation": ds['validation'],
+	"batch_size": 8,
+	"max_sequence_length": 4096,
+
+	"dataset": dataset,
 }
 birdie = Birdie(config)
 
@@ -41,7 +50,7 @@ for step_idx in range(10_000):
 		model.eval()
 		for x in birdie.get_validation_samples():
 			preds = model(x['input_ids'])
-			loss = cross_entropy(preds, x['labels'])
+			loss = log_softmax_cross_entropy(preds, x['labels'], x['loss_mask'])
 			birdie.update(loss)
 
 		validation_losses = birdie.get_validation_losses()
@@ -49,10 +58,12 @@ for step_idx in range(10_000):
 	x = birdie.get_next_training_sample()
 
 	preds = model(x['input_ids'])
-	loss = cross_entropy(preds, x['labels'], x['loss_mask'])
-
+	loss = log_softmax_cross_entropy(preds, x['labels'], x['loss_mask'])
 	loss.backward()
 	optimizer.step()
+
+
+
 ```
 
 ## Demos

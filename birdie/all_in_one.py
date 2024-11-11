@@ -13,17 +13,19 @@ try:
 except:
 	import gated_ssm_agent
 
-import jax
+# import jax
 import builtins
 
 import numpy as np
+import threading
+
 
 filename = f"{__file__.rsplit('/', 1)[-1]}"
 
 def print(*args, **kwargs):
 	# Only allow process 0 to print
-	if jax.process_index() != 0:
-		return
+	# if jax.process_index() != 0:
+	# 	return
 	return builtins.print(f"{filename}  ", *args, **kwargs)
 
 
@@ -572,9 +574,11 @@ class Birdie:
 			num_iterations=self.total_steps,
 		)
 
-		self.train_dataset = config['ds_train']
-		self.validation_dataset = config['ds_validation']
+		self.train_dataset = config['dataset']['train']
+		self.validation_dataset = config['dataset']['validation']
+		self.batch_size = config['batch_size']
 		self.wrap_dataset()
+		self.max_sequence_length = config['max_sequence_length']
 
 		self.reward_scaling_vector = config['reward_scaling_vector']
 		self.action = config['reward_scaling_vector']
@@ -583,8 +587,67 @@ class Birdie:
 		self.old_losses = []
 		self.step_counter = 0
 		self.random_generator = np.random.RandomState(0)
-		self.max_seq_length = 4096
-		self.validation_samples = [next(self.ds_valid_iterator) for _ in range(8)]
+
+		self.prefetch_queue = threading.Queue(maxsize=5)
+		self.prefetch_thread = threading.Thread(target=self.prefetch_samples)
+		self.prefetch_thread.start()
+
+		
+		self.validation_samples_per_objective = 8
+		validation_samples = [next(self.ds_valid_iterator) for _ in range(self.validation_samples_per_objective*2)]
+
+		all_validation_samples = []
+		for i in range(self.num_objectives):
+			current_objective = self.objectives[i]
+			just_added = 0
+
+			for next_sample in validation_samples:
+				print(f"  Working on objective {i} - {just_added} of {self.validation_samples_per_objective}") 
+
+				result = current_objective(next_sample, remaining_space=self.max_sequence_length)
+
+				if result['status'] == "error":
+					continue
+
+				input_ids = np.pad(result['input_ids'], (0, self.max_sequence_length - len(result['input_ids'])), constant_values=0)
+				labels = np.pad(result['labels'], (0, self.max_sequence_length - len(result['labels'])), constant_values=0)
+
+				loss_mask = np.zeros(len(input_ids) + len(labels), dtype=np.float32)
+				loss_mask[len(input_ids):len(labels)] = 1
+
+				all_validation_samples.append({'input_ids': input_ids, 'labels': labels, 'loss_mask': loss_mask})
+				just_added += 1
+
+				if just_added >= self.validation_samples_per_objective:
+					break
+
+			while just_added < self.validation_samples_per_objective:
+
+				print(f"  Working on objective {i} - {just_added} of {self.validation_samples_per_objective}") 
+
+				next_sample = next(self.ds_valid_iterator)
+				validation_samples.append(next_sample)
+
+				result = current_objective(next_sample, remaining_space=self.max_sequence_length)
+				if result['status'] == "error":
+					continue
+
+				input_ids = np.pad(result['input_ids'], (0, self.max_sequence_length - len(result['input_ids'])), constant_values=0)
+				labels = np.pad(result['labels'], (0, self.max_sequence_length - len(result['labels'])), constant_values=0)
+
+				loss_mask = np.zeros(len(input_ids) + len(labels), dtype=np.float32)
+				loss_mask[len(input_ids):len(labels)] = 1
+
+				all_validation_samples.append({'input_ids': input_ids, 'labels': labels, 'loss_mask': loss_mask})
+
+				just_added += 1
+				
+
+
+		
+
+
+
 
 
 	def time_for_eval(self):
@@ -595,11 +658,18 @@ class Birdie:
 			self.old_losses.append(loss)
 		else:
 			self.new_losses.append(loss)
-			if len(self.new_losses) >= self.num_objectives:
+			if len(self.new_losses) >= self.num_objectives * self.validation_samples_per_objective:
 				self.new_losses = np.float32(self.new_losses)
+
+				average_losses = []
+				for i in range(0, self.num_objectives * self.validation_samples_per_objective, self.validation_samples_per_objective):
+					average_losses.append(np.mean(self.new_losses[i::self.num_objectives]))
+				self.new_losses = np.float32(average_losses)
+
 				result = self.agent.update_and_sample(new_loss=self.new_losses, old_loss=self.old_losses, actions_taken=self.action)
 				self.action = result['action']
 				self.old_losses = self.new_losses
+				self.new_losses = []
 
 	def wrap_dataset(self):
 		def generator(dataset):
@@ -611,29 +681,42 @@ class Birdie:
 		self.ds_train_iterator = generator(self.train_dataset)
 		self.ds_valid_iterator = generator(self.validation_dataset)
 
+	
+	def _get_next_training_sample(self):
+		'''
+			Basic example, adding padding and such soon.
+		'''
+		while True:
+			samples = []
+			for _ in range(self.batch_size):
+				idx = self.random_generator.choice(range(self.num_objectives), p=self.action)
+				current_objective = self.objectives[idx]
+				next_sample = next(self.ds_train_iterator)
+				result = current_objective(next_sample, remaining_space=self.max_sequence_length)
+
+				if result['status'] == "error":
+					return self.get_next_training_sample()
+
+				input_ids = np.pad(result['input_ids'], (0, self.max_sequence_length - len(result['input_ids'])), constant_values=0)
+				labels = np.pad(result['labels'], (0, self.max_sequence_length - len(result['labels'])), constant_values=0)
+
+				loss_mask = np.zeros(len(input_ids) + len(labels), dtype=np.float32)
+				loss_mask[len(input_ids):len(labels)] = 1
+
+				samples.append({'input_ids': input_ids, 'labels': labels, 'loss_mask': loss_mask})
+
+				self.step_counter += 1
+			batched_samples = {'input_ids': np.array([x['input_ids'] for x in samples]), 'labels': np.array([x['labels'] for x in samples]), 'loss_mask': np.array([x['loss_mask'] for x in samples])}
+			self.prefetch_queue.put(batched_samples)
+	
 	def get_next_training_sample(self):
-		idx = self.random_generator.choice(range(self.num_objectives), p=self.action)
-		current_objective = self.objectives[idx]
-		next_sample = next(self.ds_train_iterator)
-		result = current_objective(next_sample, remaining_space=self.max_seq_length)
-
-		if result['status'] == "error":
-			return self.get_next_training_sample()
-
-		input_ids = np.pad(result['input_ids'], (0, self.max_seq_length - len(result['input_ids'])), constant_values=0)
-		labels = np.pad(result['labels'], (0, self.max_seq_length - len(result['labels'])), constant_values=0)
-
-		loss_mask = np.zeros(len(input_ids) + len(labels), dtype=np.float32)
-		loss_mask[len(input_ids):len(labels)] = 1
-
-		self.step_counter += 1
-		return {'input_ids': input_ids, 'labels': labels, 'loss_mask': loss_mask}
+		return self.prefetch_queue.get()
 
 	def get_validation_samples(self):
 		return self.validation_samples
 	
 	def get_validation_losses(self):
-		return self.new_losses
+		return self.old_losses
 
 
 
@@ -676,7 +759,8 @@ if __name__ == "__main__":
 		num_objectives=len(probs),
 		explore_classes=prob_uid_map,
 		num_iterations=total_steps,
-		pid=jax.process_index(),
+		pid=0,
+		# pid=jax.process_index(),
 	)
 
 	bandit = AgentBird(**birdie_kwargs)
