@@ -7,7 +7,7 @@
 
 '''
 
-import jax
+# import jax
 import ctypes
 import time
 import os
@@ -208,7 +208,7 @@ def load_cpp(cpp_path, pid=0,):
 def prep_lib():
 	file_loc = f"{__file__}".rsplit("/", 1)[0]
 	cpp_path = f"{file_loc}/span.cpp"
-	lib = load_cpp(cpp_path, pid=jax.process_index(),)
+	lib = load_cpp(cpp_path, pid=0)
 	lib.should_we_corrupt_this_span.argtypes = [ctypes.c_float, ctypes.c_int, ctypes.c_int]
 	lib.run_span_corruption.argtypes = [np.ctypeslib.ndpointer(dtype=np.int32), np.ctypeslib.ndpointer(dtype=np.int32), np.ctypeslib.ndpointer(dtype=np.int32), np.ctypeslib.ndpointer(dtype=np.int32), ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_float, ctypes.c_int, ctypes.c_int, ctypes.c_int, ]
 	lib.run_ssm_span_corruption.argtypes = [np.ctypeslib.ndpointer(dtype=np.int32), np.ctypeslib.ndpointer(dtype=np.int32), np.ctypeslib.ndpointer(dtype=np.int32), np.ctypeslib.ndpointer(dtype=np.int32), ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_float, ctypes.c_int, ctypes.c_int, ctypes.c_int, ]

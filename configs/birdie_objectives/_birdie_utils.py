@@ -38,6 +38,8 @@ def calculate_reward_scaling_vector(config):
 		pretraining_objectives[key]["sampling_probability"] = (1 / number_of_objective_configurations) * (1 / num_unique_objectives)
 		pretraining_objectives[key]['reward_scale'] = reward_scaling_vector[pretraining_objectives_idx]
 
+	reward_scaling_vector = np.float32(reward_scaling_vector)
+	reward_scaling_vector /= np.sum(reward_scaling_vector)
 	return reward_scaling_vector
 
 
