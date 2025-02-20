@@ -11,7 +11,10 @@ This codebase is designed to be hackable, allowing for new reward functions.
 Currently, only causal-only or prefix-LM **state space models** and Transformers decoder-only models are best supported.
 Birdie also features **sequence packing** for efficient batching.
 
-
+### Installation
+   ```bash
+   pip install git+https://github.com/samblouir/birdie.git
+   ```
 ## Usage
 
 Below is a quick start for integrating Birdie RL in your training loop:
@@ -43,13 +46,17 @@ birdie = Birdie(config)
 for step in range(config["num_steps"]):
     # Periodic evaluation
     if birdie.time_for_eval(step):
+        model.eval()
         for (objective_name, batch) in birdie.measure_validation_losses():
-            loss = model(**batch)  # Example model inference
+            loss = model(**batch)  # Inference call
             birdie.log_validation_loss(key=objective_name, loss=loss, step_idx=step)
+         model.train()
 
     # Fetch the next training sample from Birdie
     sample = birdie.get_next_training_sample()
-    # Pass 'sample' to your model and do a training step
+    loss = model(**sample)
+    ...
+
 ```
 
 You can find more detailed examples in:
