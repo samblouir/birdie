@@ -1,11 +1,64 @@
 # Birdie: Reward-driven Automated Curricula
 
-**Birdie** waws published at **EMNLP 2024**!  
+**Birdie** was published at **EMNLP 2024**!  
 Check out our paper on arXiv: [arXiv:2411.01030](https://arxiv.org/abs/2411.01030).
 
 Birdie RL is an open-source framework designed to automate **multi-objective** training using a **reward-driven** curriculum.
-With dynamically mixes of training tasks -- including selective copying, next token prediction, autoencoding, infilling, copying, and prefix-LM -- Birdie automatically attempts to optimize model learning according to a **reward model** that tracks per-objective loss improvements, conditioned on the entire history. This codebase allows for modular reward functions.
-This codebase suits (e.g., decoder-only, causal-only or prefix-LM **state space models** and Transformers) and also features **sequence packing** for efficient batching.
+
+With dynamically mixes of training tasks -- including selective copying, next token prediction, autoencoding, infilling, copying, and prefix-LM -- Birdie automatically attempts to optimize model learning according to a **reward model** that tracks per-objective loss improvements, conditioned on the entire history.
+
+This codebase is designed to be hackable, allowing for new reward functions.
+Currently, only causal-only or prefix-LM **state space models** and Transformers decoder-only models are best supported.
+Birdie also features **sequence packing** for efficient batching.
+
+
+## Usage
+
+Below is a quick start for integrating Birdie RL in your training loop:
+
+```python
+from birdie_rl import Birdie
+from example_usage.ul2_config import ul2_config
+import tiktoken
+import accelerate
+
+# Configuration
+config = {
+    "batch_size": 8,
+    "sequence_length": 2048,
+    "num_workers": 16,
+    "steps_between_evaluations": 32,
+    "num_steps": 4096,
+    "accelerator": accelerate.Accelerator(),
+    "tokenizer": tiktoken.get_encoding("o200k_base"),
+    "objectives": ul2_config,
+    "ds": your_data_generator_function,  # Provide your dataset or generator
+    "reward_fn": your_reward_function,   # Define your custom reward logic
+}
+
+# Initialize Birdie
+birdie = Birdie(config)
+
+# Training Loop
+for step in range(config["num_steps"]):
+    # Periodic evaluation
+    if birdie.time_for_eval(step):
+        for (objective_name, batch) in birdie.measure_validation_losses():
+            loss = model(**batch)  # Example model inference
+            birdie.log_validation_loss(key=objective_name, loss=loss, step_idx=step)
+
+    # Fetch the next training sample from Birdie
+    sample = birdie.get_next_training_sample()
+    # Pass 'sample' to your model and do a training step
+```
+
+You can find more detailed examples in:
+- **`example_usage/example.py`** for a minimal script
+- **`example_usage/ul2_config.py`** for UL2-style objectives
+- **`example_usage/utils.py`** for custom reward functions and data generator demos
+
+---
+
 
 <div align="center">
   <a href="https://github.com/samblouir/birdie/blob/main/birdie_emnlp_2024_poster.jpg?raw=true"><img src="https://github.com/samblouir/birdie/blob/main/birdie_emnlp_2024_poster.jpg?raw=true" alt="Birdie EMNLP 2024 Poster" width="800" /></a>
@@ -74,53 +127,6 @@ This codebase suits (e.g., decoder-only, causal-only or prefix-LM **state space 
    ```bash
    python example_usage/example.py
    ```
-
----
-
-## Usage
-
-Below is a quick start for integrating Birdie RL in your training loop:
-
-```python
-from birdie_rl import Birdie
-from example_usage.ul2_config import ul2_config
-import tiktoken
-import accelerate
-
-# Configuration
-config = {
-    "batch_size": 8,
-    "sequence_length": 2048,
-    "num_workers": 16,
-    "steps_between_evaluations": 32,
-    "num_steps": 4096,
-    "accelerator": accelerate.Accelerator(),
-    "tokenizer": tiktoken.get_encoding("o200k_base"),
-    "objectives": ul2_config,
-    "ds": your_data_generator_function,  # Provide your dataset or generator
-    "reward_fn": your_reward_function,   # Define your custom reward logic
-}
-
-# Initialize Birdie
-birdie = Birdie(config)
-
-# Training Loop
-for step in range(config["num_steps"]):
-    # Periodic evaluation
-    if birdie.time_for_eval(step):
-        for (objective_name, batch) in birdie.measure_validation_losses():
-            loss = model(**batch)  # Example model inference
-            birdie.log_validation_loss(key=objective_name, loss=loss, step_idx=step)
-
-    # Fetch the next training sample from Birdie
-    sample = birdie.get_next_training_sample()
-    # Pass 'sample' to your model and do a training step
-```
-
-You can find more detailed examples in:
-- **`example_usage/example.py`** for a minimal script
-- **`example_usage/ul2_config.py`** for UL2-style objectives
-- **`example_usage/utils.py`** for custom reward functions and data generator demos
 
 ---
 
@@ -204,5 +210,6 @@ If you use (or build on) Birdie RL in your work, kindly cite our **EMNLP 2024** 
     pages = "9679--9705",
 }
 ```
+
 
 
