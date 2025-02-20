@@ -5,11 +5,11 @@
 	- The configuration for the UL2 objectives specialized for a decoder-only Transformer
 
 Empirical observation notes:
-	The SSMs seemed to strongly overfit to specific objectives.
 	The UL2 decoder-only speccialization's infilling only includes:
 	- 15% corruption + 3 token mean span width
 	- 50% corruption + 32 token mean span width
-	In Birdie, we found better performance add more objectives in-between the two (and adding more objectives in general.)
+	The SSMs seemed to strongly overfit to specific objectives.
+	In Birdie, we found the SSM was sensitive to this, and we found improved performance by adding more objectives in-between these two (aswell as adding more objectives in general.)
 
 '''
 
