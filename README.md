@@ -18,7 +18,7 @@ Below is a quick start for integrating Birdie RL in your training loop:
 
 ```python
 from birdie_rl import Birdie
-from example_usage.ul2_config import ul2_config
+from birdie_rl.example_usage.ul2_config import ul2_config
 import tiktoken
 import accelerate
 
