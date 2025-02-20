@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "An automated reward modeling and text-processing pipeline for multi-objective training of language models."
 authors = [
     { name = "Sam Blouir", email = "samblouir@gmail.com" },
-    { name = "Jimmy Smith", email = "jsmith@stanford.edu" }
+    { name = "Jimmy T.H. Smith", email = "jsmith@stanford.edu" }
 ]
 #license = "Apache-2.0"
 readme = "README.md"           
