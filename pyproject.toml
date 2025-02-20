@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "birdie-rl"
+version = "0.1.0"
+description = "An automated reward modeling and text-processing pipeline for multi-objective training of language models."
+authors = [
+    { name = "Sam Blouir", email = "samblouir@gmail.com" }
+    { name = "Jimmy Smith", email = "jsmith@stanford.edu" }
+]
+#license = "Apache-2.0"
+readme = "README.md"           
+requires-python = ">=3.8"
+
+# List direct dependencies here. For example:
+dependencies = [
+    "numpy==1.26.4",
+    "torch",
+    "tiktoken",
+    "datasets",
+    "accelerate",
+]
+
+[project.urls]
+"Source" = "https://github.com/samblouir/birdie"
+"Tracker" = "https://github.com/samblouir/birdie/issues"
+"Homepage" = "https://github.com/samblouir/birdie"
+
+# [project.scripts]
+# birdie = "birdie_rl.example_usage:example"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+  "birdie_rl",
+  "birdie_rl.*",
+  "pipeline", 
+  "modeling", 
+  "objectives",
+]
+

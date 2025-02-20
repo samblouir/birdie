@@ -1,7 +1,0 @@
-numpy
-transformers
-torch
-jax
-jaxlib
-flax
-datasets

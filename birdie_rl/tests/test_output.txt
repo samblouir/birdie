@@ -1,0 +1,111 @@
+F.EEE.F.......
+======================================================================
+ERROR: test_fill_packer_entirely (test_packer.TestPacker)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/sam/birdie_paradigm/tests/test_packer.py", line 50, in test_fill_packer_entirely
+    status1 = packer.add_sample(inp1, lab1)
+  File "/home/sam/birdie_paradigm/packer.py", line 329, in add_sample
+    raise ValueError("Even a fresh PackedArray can't fit this sample!")
+ValueError: Even a fresh PackedArray can't fit this sample!
+
+======================================================================
+ERROR: test_forced_ready (test_packer.TestPacker)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/sam/birdie_paradigm/tests/test_packer.py", line 77, in test_forced_ready
+    status = packer.add_sample(inp, lab, add_sep=False, force_ready_if_too_long=6)
+  File "/home/sam/birdie_paradigm/packer.py", line 329, in add_sample
+    raise ValueError("Even a fresh PackedArray can't fit this sample!")
+ValueError: Even a fresh PackedArray can't fit this sample!
+
+======================================================================
+ERROR: test_multiple_arrays (test_packer.TestPacker)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/sam/birdie_paradigm/tests/test_packer.py", line 96, in test_multiple_arrays
+    status = packer.add_sample(inp, lab, add_sep=False)
+  File "/home/sam/birdie_paradigm/packer.py", line 329, in add_sample
+    raise ValueError("Even a fresh PackedArray can't fit this sample!")
+ValueError: Even a fresh PackedArray can't fit this sample!
+
+======================================================================
+FAIL: test_basic_packing (test_packer.TestPacker)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/sam/birdie_paradigm/tests/test_packer.py", line 25, in test_basic_packing
+    self.assertFalse(status["ready"])
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_packer_with_dna_samples (test_packer.TestPackerAdditional)
+Test packing repeated DNA token patterns to ensure correct leftover detection.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/sam/birdie_paradigm/tests/test_packer.py", line 142, in test_packer_with_dna_samples
+    self.assertFalse(status["ready"], "Might not fill array completely but no errors expected")
+AssertionError: True is not false : Might not fill array completely but no errors expected
+
+---------------
+--- test_basic_packing ---
+SequencePacker created with sequence_length=16, minimum_sequence_length=4
+
+Adding sample 0: input_ids.size=3, label_ids.size=3
+After add_sample => status={'ready': False}, remaining_space=5
+
+Adding sample 1: input_ids.size=2, label_ids.size=2
+After add_sample => status={'ready': True}, remaining_space=2
+
+--- test_exceed_max_input_length_error ---
+
+--- test_fill_packer_entirely ---
+
+--- test_forced_ready ---
+
+--- test_multiple_arrays ---
+
+Adding sample #0: input.size=3, label.size=3
+
+Name                                        Stmts   Miss  Cover   Missing
+-------------------------------------------------------------------------
+load_objective.py                              27     15    44%   54-69, 74-81
+minimal_trainer.py                             49     49     0%   2-87
+modeling/__init__.py                            0      0   100%
+modeling/basemodel.py                         178    178     0%   2-470
+modeling/tokenizer.py                          46     15    67%   52, 60, 81-84, 96, 100-111
+modeling/toy_model.py                          50     50     0%   1-88
+objectives/__init__.py                          0      0   100%
+objectives/autoencoding.py                     96     74    23%   37-40, 54, 68-181, 189-208
+objectives/base.py                             66     44    33%   57-64, 73-74, 89-114, 129-172, 182, 187-194
+objectives/copying.py                          48     34    29%   41, 49-87, 101-123
+objectives/deshuffling.py                      83     68    18%   32-37, 47, 55-117, 133-173, 182-197
+objectives/infilling.py                       116     94    19%   30-33, 45, 50-181, 194-209
+objectives/next_token_prediction.py            64     49    23%   36, 44-62, 101-141, 150-167
+objectives/prefix_language_modeling.py         66     52    21%   36, 44-86, 102-142, 151-166
+objectives/selective_copying.py               158    122    23%   69, 81-172, 187-210, 218-228, 237-265, 274-314, 323-346
+objectives/utils.py                            26     22    15%   29-52, 62-76
+packer.py                                     209     52    75%   19, 106, 120, 123, 155, 193-196, 204, 218-225, 232, 248, 301, 304, 307, 309, 330, 334, 342, 350-365, 373, 387, 394-395, 399, 404-412
+pipeline/__init__.py                            0      0   100%
+pipeline/main_controller.py                    27     21    22%   36-40, 49-75, 81-82
+pipeline/simple_pipeline.py                    26     26     0%   9-100
+pipeline/worker.py                            122    108    11%   46-65, 71-72, 83-102, 111-132, 139-202, 208-214, 225-236
+pipeline_generator.py                          63     53    16%   23-173, 193-201
+simple_usage.py                                33     33     0%   7-78
+tests/__init__.py                               0      0   100%
+tests/test_alignment.py                        19     13    32%   34-61
+tests/test_autoencoding.py                    103     90    13%   14-36, 42-58, 64-79, 85-104, 110-126, 132-142, 148-162, 168-180, 186-198
+tests/test_copying.py                          68     56    18%   8, 11-29, 33-40, 46-56, 62-74, 80-90, 96-106
+tests/test_deshuffling.py                      68     56    18%   8, 12-28, 32-44, 49-62, 68-79, 85-95, 101-116
+tests/test_infilling.py                        85     72    15%   8, 12-27, 31-48, 53-75, 79-92, 99-115, 121-131, 140-153
+tests/test_load_objective.py                   30     21    30%   7-10, 14-17, 21-23, 29-36, 42-47, 53-58
+tests/test_minimal_trainer_integration.py      27     21    22%   21-100
+tests/test_next_token_prediction.py            67     55    18%   11, 14-27, 31-38, 42-53, 59-71, 77-87, 93-103
+tests/test_packer.py                          116     52    55%   26-35, 51-70, 78-87, 97-107, 145
+tests/test_pipeline.py                        253    225    11%   47-48, 66-74, 84-86, 98-99, 103-123, 139-197, 204-205, 227-267, 278-311, 319-349, 357-382, 389-414, 422-445, 452-475, 483-510, 520-527, 530
+tests/test_prefix_language_modeling.py         74     62    16%   11, 15-25, 29-44, 48-63, 69-83, 89-102, 108-121
+tests/test_selective_copying.py                81     68    16%   13, 19-40, 46-65, 69-81, 85-100, 107-122, 128-141, 147-162
+tests/test_tokenizer.py                        42      1    98%   137
+tests/test_utils.py                            65     57    12%   16-69, 154-156, 162-172
+-------------------------------------------------------------------------
+TOTAL                                        2651   2008    24%
+
