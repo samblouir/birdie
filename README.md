@@ -1,6 +1,7 @@
 # Birdie: Reward-driven Automated Curricula
 
-**Birdie** was published at **EMNLP 2024**!  
+**Birdie** was published at **EMNLP 2024**!
+[The latest version of the paper is here](https://github.com/samblouir/birdie/blob/main/Birdie__Advancing_State_Space_Models_with_Reward_Driven_Objectives_and_Curricula.pdf?raw=true)
 Check out our paper on arXiv: [arXiv:2411.01030](https://arxiv.org/abs/2411.01030).
 
 Birdie RL is an open-source framework designed to automate **multi-objective** training using a **reward-driven** curriculum.
