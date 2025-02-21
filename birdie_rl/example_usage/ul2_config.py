@@ -32,9 +32,11 @@ dummy_config = [
 '''
 	UL2 + Variation
 '''
-# Rough estimate from English data from ByT5, you may want to adjust this based on your domain and tokenizer.
+# Currently, the infilling denoiser in "objectives/infilling.py" is masking out entire tokens.
+# If you are using character-level tokenization (currently if you're using Birdie DNA then this will you may want to set to to 4 or greater)
+# (That's a rough estimate from English data from ByT5, you may want to adjust this based on your domain and tokenizer)
 # ByT5: https://arxiv.org/abs/2105.13626
-multipler_for_operating_on_characters_instead_of_tokens = 4.0
+multipler_for_operating_on_characters_instead_of_tokens = 1.0
 
 # From UL2: https://arxiv.org/abs/2205.05131
 ul2_config = [
