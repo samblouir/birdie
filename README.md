@@ -2,7 +2,7 @@
 
 **Birdie** was published at **EMNLP 2024**!
 
-[The latest version of the paper is here available here.](https://github.com/samblouir/birdie/blob/main/Birdie__Advancing_State_Space_Models_with_Reward_Driven_Objectives_and_Curricula.pdf?raw=true)
+[The latest version of the paper is here available here.](https://github.com/samblouir/birdie/blob/main/Birdie__Advancing_State_Space_Models_with_Reward_Driven_Objectives_and_Curricula.pdf)
 
 Please check out our paper on arXiv: [arXiv:2411.01030](https://arxiv.org/abs/2411.01030).
 
