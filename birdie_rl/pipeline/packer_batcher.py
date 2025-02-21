@@ -13,7 +13,7 @@ def debug_alignments(current_dict, sub_idx=0):
 			f"attention_mask: {current_dict['attention_mask'][sub_idx][idx]}"
 		)
 
-
+		
 class Packer:
 	def __init__(self, config=None):
 		if config is None:
@@ -25,6 +25,7 @@ class Packer:
 		self.minimum_sequence_length = self.config.get("minimum_sequence_length", 64)
 		self.sequence_length = int(self.config.get("sequence_length", 1024))
 		self.reset(self.sequence_length)
+		assert(self.sequence_length >= self.minimum_sequence_length)
 
 	def reset(self, sequence_length=None):
 		target_sequence_length = sequence_length or self.sequence_length
