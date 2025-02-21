@@ -1,5 +1,9 @@
 '''
-	This minimal example loads in the original UL2 config, and simulates 
+	!!!!!!!!!!!!!!!!!!!!!!!!!!
+	PLEASE SEE """birdie_rl/example_usage/example.py"""
+	!!!!!!!!!!!!!!!!!!!!!!!!!!
+	This minimal example loads in the original UL2 config, and simulates training (random losses are given for the validation losses).
+	
 '''
 import os
 from birdie_rl import Birdie

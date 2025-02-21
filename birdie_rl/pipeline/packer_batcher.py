@@ -13,7 +13,7 @@ def debug_alignments(current_dict, sub_idx=0):
 			f"attention_mask: {current_dict['attention_mask'][sub_idx][idx]}"
 		)
 
-		
+
 class Packer:
 	def __init__(self, config=None):
 		if config is None:
@@ -169,7 +169,7 @@ class Batcher:
 		# If any packer can accept, we return True
 		return any(entry[2].can_accept(input_ids, label_ids) for entry in self.pq)
 
-	def add(self, input_ids, label_ids, loss_mask=None):
+	def add(self, input_ids, label_ids, loss_mask=None, force_finish_pack=False,):
 		"""
 		Prioritize packers with the least remaining space that can still accept the input.
 		We pop from the min-heap; if the top packer can accept, we use it.
@@ -187,7 +187,11 @@ class Batcher:
 				# Found a packer that can accept
 				packer.add(input_ids, label_ids, loss_mask=loss_mask)
 				# Push it back with its updated remaining space
-				heapq.heappush(self.pq, (packer.get_remaining_space(), idx, packer))
+				if force_finish_pack:
+					new_remaining_space = 0
+				else:
+					new_remaining_space = packer.get_remaining_space()
+				heapq.heappush(self.pq, (new_remaining_space, idx, packer))
 				packer_found = True
 				break
 			else:
