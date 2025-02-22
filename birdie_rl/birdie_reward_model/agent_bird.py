@@ -418,13 +418,14 @@ class AgentBird:
 		if self.bootstrap_ctrs is None:
 			self.bootstrap_ctrs = {}
 		self.bootstrap__strategy = None
+
+		# Not imlemented
 		if self.bootstrap__strategy is not None:
-			self.bootstrap__enabled = True
-			# Example usage if user had "formatted_history" or similar
-			import formatted_history
-			self.bootstrap__data = formatted_history.get_data(config=self.bootstrap__config)
-			# Sort by final mean loss, then pick best/worst/random, etc. as per strategy
-			# (Implementation truncated for clarity)
+			raise Exception("  Agent state bootstrapping not implemented yet.")
+		# 	self.bootstrap__enabled = True
+		# 	import formatted_history
+		# 	self.bootstrap__data = formatted_history.get_data(config=self.bootstrap__config)
+		# 	# Sort by final mean loss, then pick best/worst/random, etc. as per strategy
 
 		# Construct a schedule for exploration probability
 		self.cosine_decay_schedule_kwargs = dict(
@@ -587,6 +588,7 @@ class AgentBird:
 
 		# Optionally apply a 'conversion_model' if set (unused by default).
 		if self.conversion_model is not None:
+			raise NotImplementedError("Anti-slop transformation not implemented yet!")
 			chunk_size = 64
 			for chunk_idx in range(0, test_input.shape[0], chunk_size):
 				test_input[chunk_idx:chunk_idx + chunk_size, :, -self.num_objectives:] = \
@@ -610,7 +612,7 @@ class AgentBird:
 		chunks = []
 		chunk_size = 64
 		with torch.no_grad():
-			for idx in range(0, test_input.shape[0], chunk_size):
+			for idx in tqdm(range(0, test_input.shape[0], chunk_size), desc="Predicting rewards... (done in chunks to save VRAM)"):
 				chunk = test_input[idx:idx + chunk_size]
 				# The model returns shape [batch_size, seq_len, output_dim].
 				# We pick the last time step or a specific one (just an example).
@@ -881,10 +883,11 @@ class AgentBird:
 
 		# We can optionally apply a conversion model if available
 		if self.conversion_model is not None:
-			chunk_size = 64
-			for chunk_idx in range(0, x.shape[0], chunk_size):
-				x[chunk_idx:chunk_idx + chunk_size, :, x.shape[-1] // 2:] = \
-					self.conversion_model(x[chunk_idx:chunk_idx + chunk_size, :, x.shape[-1] // 2:])
+			raise NotImplementedError("Anti-slop transformation not implemented yet!")
+		# 	chunk_size = 64
+		# 	for chunk_idx in range(0, x.shape[0], chunk_size):
+		# 		x[chunk_idx:chunk_idx + chunk_size, :, x.shape[-1] // 2:] = \
+		# 			self.conversion_model(x[chunk_idx:chunk_idx + chunk_size, :, x.shape[-1] // 2:])
 
 		# Pad x to default sequence length if needed
 		pad_length = seq_len_limit - x.shape[1]
