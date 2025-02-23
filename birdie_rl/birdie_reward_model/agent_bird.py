@@ -625,8 +625,14 @@ class AgentBird:
 		# Run inference in chunks to avoid OOM if large
 		chunks = []
 		chunk_size = 64
+
+		if self.accelerator is not None:
+			disable = (not self.accelerator.is_main_process)
+		else:
+			disable = False
+
 		with torch.no_grad():
-			for idx in tqdm(range(0, test_input.shape[0], chunk_size), desc="Predicting rewards... (done in chunks to save VRAM)"):
+			for idx in tqdm(range(0, test_input.shape[0], chunk_size), desc="Predicting rewards... (done in chunks to save VRAM)", disable=disable):
 				chunk = test_input[idx:idx + chunk_size]
 				# The model returns shape [batch_size, seq_len, output_dim].
 				# We pick the last time step or a specific one (just an example).

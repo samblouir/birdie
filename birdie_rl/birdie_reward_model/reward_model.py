@@ -60,6 +60,7 @@ class RewardModel(nn.Module):
 		agent_bird_kwargs = {
 			**config,
 			**dict(
+				accelerator=config['accelerator'], # shown for clarity
 				reward_signal_dims=self.reward_signal_dims,
 				num_objectives=self.num_objectives,
 				explore_classes=xc,
