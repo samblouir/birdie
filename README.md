@@ -29,21 +29,18 @@ Birdie also features **sequence packing** for efficient batching.
 
 Below is a quick start for integrating Birdie RL in your training loop. The data_generator_fn is important. It should be able to return an iterable object for a given split, sharded by worker_id and num_workers, and shuffled using rng_seed.
 
+### Data generator function using HuggingFace's datasets:
 ```python
-from birdie_rl import Birdie
-from birdie_rl.example_usage.ul2_config import ul2_config
-import tiktoken
-import accelerate
 
-def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
+def huggingface_data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 	"""
 	The data_generator function will be called by each dataloading worker.
 	This currently only data parallel training, where each accelerator has its own copy of the model.
 
 	This function should return a generator for a given
 	  - split (e.g., "train", "validation", "test")
-	  - shards it by worker_id and num_workers
-	  - shuffles the data using rng_seed
+	  - shard defined by by worker_id and num_workers
+	  - shuffle data using rng_seed
 	"""
 
 	# Load the TinyStories dataset from Hugging Face
@@ -59,6 +56,49 @@ def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 	return ds
 
 
+```
+
+### Data generator function from a list:
+```python
+
+	ds_train = ds["train"].tolist()
+	ds_validation = ds["validation"].tolist()
+  
+	def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
+		"""
+		The data_generator function will be called by each dataloading worker.
+		This currently only data parallel training, where each accelerator has its own copy of the model.
+
+		This function should return a generator for a given
+		- split (e.g., "train", "validation", "test")
+		- shards it by worker_id and num_workers
+		- shuffles the data using rng_seed
+		"""
+
+		# Load the TinyStories dataset from Hugging Face
+		if split == "train":
+			ds = ds_train
+		elif split == "validation":
+			ds = ds_validation
+
+		# Shard the dataset among multiple workers
+		ds = ds[worker_id::num_workers]
+
+		# Shuffle the dataset for randomness
+		seeded_np_rng = np.random.default_rng(rng_seed)
+		seeded_np_rng.shuffle(ds)
+
+		# Return the prepared dataset
+		return ds
+```
+
+### Training code:
+```python
+from birdie_rl import Birdie
+from birdie_rl.example_usage.ul2_config import ul2_config
+import tiktoken
+import accelerate
+
 # Configuration
 config = {
     "batch_size": 8,
@@ -69,7 +109,7 @@ config = {
     "accelerator": accelerate.Accelerator(),
     "tokenizer": tiktoken.get_encoding("o200k_base"),
     "objectives": ul2_config,
-    "ds": data_generator_fn,  # Provide your dataset or generator
+    "ds": data_generator_fn,  # Provide your dataset fn
     "reward_fn": your_reward_function,   # Define your custom reward logic
 }
 
