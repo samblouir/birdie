@@ -26,27 +26,39 @@ class RewardModel(nn.Module):
 			  hidden_dims=(256,256,256,256),
 			  lr=5e-4,
 			  device="cpu",
+			  **kwargs,
 		):
 
 		super().__init__()
+		self.__dict__.update(kwargs)
 		self.reward_signal_dims = reward_signal_dims
 		self.num_objectives = (num_objectives or self.reward_signal_dims)
 		self.input_dim = (2 * self.reward_signal_dims)
 		self.output_dim = num_objectives
 		self.device = device
 
+		# Sets the unique classes for the objectives
+		# Currently assumes all objectives are unique and should share an equal weight when calculating the reward
 		xc = np.arange(self.num_objectives)
 		xc -= 1
+
+		# This sets the first two classes to be labeled as the same objective (assumed to just have different configurations, i.e.: span corruption/infilling with a mean span width of 3 and 8)
+		# This tells the reward model to not incentivize improving the performance of this "single" objective as two objectives... or, in other terms, each objective's "importance of improving" is half that of a regular objective.
 		# xc[0:2] = 0
+
 		
-		self.agent = agent_bird.AgentBird(
-			reward_signal_dims=self.reward_signal_dims,
-			num_objectives=self.num_objectives,
-			explore_classes=xc,
-			# accelerator=accelerator,
-			device=self.device,
-			hidden_dims=hidden_dims,
-		)
+		agent_bird_kwargs = {
+			**kwargs,
+			**dict(
+				reward_signal_dims=self.reward_signal_dims,
+				num_objectives=self.num_objectives,
+				explore_classes=xc,
+				# accelerator=accelerator,
+				device=self.device,
+				hidden_dims=hidden_dims,
+			),
+		}
+		self.agent = agent_bird.AgentBird(**agent_bird_kwargs)
 
 
 	def forward(self, *args, **kwargs):

@@ -156,7 +156,7 @@ class Birdie:
 		self.sequence_length = config.get("sequence_length", 1024)
 		self.steps_between_evaluations = config.get("steps_between_evaluations", 512)
 		self.tokenizer = config.get("tokenizer", None)
-		self.total_steps = config.get("total_steps", 10000)
+		self.total_steps = config.get("total_steps", config.get("num_steps", 16_384))
 		self.move_to_gpu_fn = config.get("move_to_gpu_fn", partial(default_move_to_gpu_fn, accelerator=self.accelerator))
 
 
@@ -201,6 +201,7 @@ class Birdie:
 
 		# Initialize a small RewardModel to predict sub-loss improvements
 		reward_model_config = {
+			**config,
 			"reward_signal_dims": self.reward_signal_dims,
 			"num_objectives": len(self.objectives),
 			"hidden_dims": (256, 256, 256, 256),

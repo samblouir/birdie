@@ -297,7 +297,7 @@ class AgentBird:
 
 	# Training-related parameters
 	training_iter = 100_000
-	num_iterations = 100
+	num_iterations = 16384
 	init_iters = 10
 	debug_steps = 0
 
@@ -370,13 +370,21 @@ class AgentBird:
 		"""
 		Initialize the AgentBird instance. Merges kwargs into internal attributes.
 
-		Common kwargs might include:
-		  - reward_signal_dims (int)
-		  - num_objectives (int)
-		  - hidden_dims (list)
-		  - lr, weight_decay, etc.
-		  - explore_classes (list or array) to define which parts of the action vector correspond to different objectives.
+		kwargs include:
+		  - agent_explore_warmup_steps: Number of steps to cosine-decay exploration over. The agent will explore at the prob. of (agent_explore_max_rate to agent_explore_min_rate) over (agent_explore_num_steps).
+		  - agent_explore_num_steps: Number of steps until the agent explores at agent_explore_min_rate.
+		  - agent_explore_decay_steps: Number of steps to decay exploration.
+		  - agent_explore_rate_min: Minimum exploration rate.
+		  - agent_explore_rate_max: Maximum exploration rate.
+		  - agent_explore_cook_period: Percentage of agent_explore_num_steps to hold exploration constant at agent_explore_cook_prob. This is similar to the common adafactor lr warmup over the first 10_000 steps. Can be over 1.0.
+
+		  - reward_signal_dims (int) (the model's output dimensions (currently in the range of [-1, 1]))
+		  - num_objectives (int) (the model's input dimensions (i.e.: the number of training objectives objectives))
+		  - hidden_dims (list) (hidden layer sizes for the MLP)
+		  - lr, weight_decay, etc. (floats) (hyperparameters for the agent's optimizer)
+		  - explore_classes (list or array) (defines which parts of the action vector correspond to different objectives. For example, if you have next_token_prediction seq_len 512 and next_token_prediction seq_len 1024, you might want to group them together as a single objective. Otherwise, the model will make this worth twice as much as a normal objective. Your desries may vary!)
 		  - device: "cpu", "cuda", etc.
+
 		"""
 		# Merge any user-provided kwargs with the class defaults
 		self.__dict__.update(kwargs)
@@ -392,11 +400,16 @@ class AgentBird:
 		self.reward_fn = kwargs.get("reward_fn", self.calculate_reward)
 
 		# Adjust decay steps based on num_iterations
-		self.decay_steps = int(self.num_iterations * 0.50)
-		self.warmup_steps = int(self.num_iterations * 0.10)
+		self.num_iterations = kwargs.get("agent_explore_num_steps", self.num_iterations)
+		self.decay_steps = kwargs.get("agent_explore_decay_steps", int(self.num_iterations * 0.50))
+		self.warmup_steps = kwargs.get("agent_explore_warmup_steps", int(self.num_iterations * 0.10))
+		self.exploration_rate_min = kwargs.get("agent_explore_rate_min", 0.20)
+		self.exploration_rate_max = kwargs.get("agent_explore_rate_max", 0.50)
 
-		# Cook steps are an optional period to hold exploration at a certain value
-		explore_cook = float(kwargs.get("explore_cook", 5)) / 100
+		# Cook steps are an optional period to hold exploration at a certain value until we reach a certain step (defined by cook period)
+		explore_cook = float(kwargs.get("agent_explore_cook_period", 0.05))
+		# This is the probability of exploration during the cook period
+		agent_explore_cook_prob = float(kwargs.get("agent_explore_cook_prob", 1.0))
 		cook_steps = int(self.num_iterations * explore_cook)
 
 		# Step counters and histories
@@ -434,7 +447,7 @@ class AgentBird:
 			cook_steps=cook_steps,
 			min_val=self.exploration_rate_min,
 			max_val=self.exploration_rate_max,
-			cook_val=1.0,
+			cook_val=agent_explore_cook_prob,
 		)
 		self.explore_schedule = make_cosine_decay_schedule(**self.cosine_decay_schedule_kwargs)
 
