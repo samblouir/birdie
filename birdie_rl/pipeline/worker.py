@@ -113,8 +113,8 @@ class Worker:
 		"""
 		Helper method to print with worker info.
 		"""
+		# print(*args, **kwargs) ## Uncomment this to enable worker debug printing
 		pass
-		# print(*args, **kwargs)
 
 	def close(self):
 		"""

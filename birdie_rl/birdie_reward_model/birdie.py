@@ -61,7 +61,7 @@ def normalize_objective_probs(x):
 	"""
 	Normalizes the probabilities of objectives in a list of dictionaries.
 	"""
-	total = sum(obj["prob"] for obj in x)
+	total = sum(obj.get("prob", 1.0) for obj in x)
 
 	if (total <= 0.0):
 		for obj in x:
@@ -70,7 +70,7 @@ def normalize_objective_probs(x):
 		print(f"  WARNING: Total probability of objectives is {total}. Normalized each objective's probability to 1.0. (total number of objectives: {len(x)})")
 
 	for obj in x:
-		obj["prob_initial"] = (obj["prob"] / total)
+		obj["prob_initial"] = (obj.get("prob", 1.0) / total)
 	return x
 	
 
@@ -166,7 +166,7 @@ class Birdie:
 					"agent_explore_cook_prob": lambda x: x.get("agent_explore_cook_prob", 1.0),
 			
 		"""
-		
+
 		if config is None:
 			config = {}
 
@@ -235,7 +235,10 @@ class Birdie:
 			"lr": 5e-4,
 			"device": self.accelerator.device if self.accelerator else "cpu",
 		}
-		self.reward_model = RewardModel(**reward_model_config)
+		for reward_model_config_idx, (key, value) in enumerate(reward_model_config.items()):
+			print(f"  reward_model_config[{key}]: {value}")
+			
+		self.reward_model = RewardModel(reward_model_config)
 
 		# Create data pipeline for training
 		self.controller, self.ds = pipeline_data_generator(
@@ -518,6 +521,8 @@ class Birdie:
 			np.ndarray or None: The latest array of validation losses (one entry per objective),
 			or None if no validation step has been completed yet.
 		"""
+		if self.current_validation_losses is not None:
+			assert(len(self.current_validation_losses) == len(self.objectives)), f"  FATAL EXCEPTION: len(self.current_validation_losses): {len(self.current_validation_losses)},  len(self.objectives): {len(self.objectives)}"
 		return self.current_validation_losses
 
 	def get_current_action(self) -> np.ndarray:
@@ -527,6 +532,8 @@ class Birdie:
 		Returns:
 			np.ndarray: A 1D array of floats, each dimension representing the probability of an objective configuration being sampled.
 		"""
+		if self.last_action is not None:
+			assert(len(self.last_action) == len(self.objectives)), f"  FATAL EXCEPTION: len(self.last_action): {len(self.last_action)},  len(self.objectives): {len(self.objectives)}"
 		return self.last_action
 	
 	def get_verbose_action(self) -> Dict[str, float]:
@@ -578,6 +585,7 @@ if __name__ == "__main__":
 	import os
 	import numpy as np
 	import accelerate
+	import tiktoken
 
 	os.system("clear")
 	print("  Hi! This is a test file for the Birdie class.\n")
@@ -593,18 +601,30 @@ if __name__ == "__main__":
 		{"name": "selective_copying"},
 	]
 
+	def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
+		# This dummy fn returns the same list of sstring for any worker or split.
+		return [str(np.arange(x+1)) for x in range(64, 512)]
+	
+	def text_grabber_fn(x):
+		return x
+
+	tokenizer = tiktoken.get_encoding("o200k_base")
+	
 	accelerator = accelerate.Accelerator()
 	config = {
-		"tokenizer": None,
+		"tokenizer": tokenizer,
 		"total_steps": 10000,
 		"steps_between_evaluations": 500,
 		"batch_size": 8,
 		"max_sequence_length": 2048,
 		"accelerator": accelerator,
 		"validation_objectives": objectives_config,
+		"ds": data_generator_fn,
+		"text_grabber_fn": text_grabber_fn,
 	}
 
 	birdie = Birdie(config)
+
 
 	print("*" * 60)
 	print("  Showing validation samples:")
@@ -619,7 +639,8 @@ if __name__ == "__main__":
 
 	# Mocking two 'training + validation' cycles
 	for _ in range(2):
-		if birdie.time_for_eval():
+		# if birdie.time_for_eval():
+		if True:
 			# Start measuring
 			flat_batches = birdie.measure_validation_losses()
 			# Fake computation of losses

@@ -21,21 +21,29 @@ class RewardModel(nn.Module):
 	"""
 
 	def __init__(self,
-			  reward_signal_dims:int,
-			  num_objectives: int= None,
-			  hidden_dims=(256,256,256,256),
-			  lr=5e-4,
-			  device="cpu",
-			  **kwargs,
+			#   reward_signal_dims:int,
+			#   num_objectives: int= None,
+			#   hidden_dims=(256,256,256,256),
+			#   lr=5e-4,
+			#   device="cpu",
+			  config: dict,
 		):
+		print(f'  HELLO!!!!!!!!!!!!!!!!!!!!!')
 
 		super().__init__()
-		self.__dict__.update(kwargs)
-		self.reward_signal_dims = reward_signal_dims
-		self.num_objectives = (num_objectives or self.reward_signal_dims)
-		self.input_dim = (2 * self.reward_signal_dims)
-		self.output_dim = num_objectives
-		self.device = device
+		self.__dict__.update(config)
+
+		d = self.__dict__
+		for d_idx, (key, value) in enumerate(d.items()):
+			print(f"  d[{key}]: {value}")
+
+		# self.reward_signal_dims = reward_signal_dims
+		self.num_objectives = (config.get("num_objectives", config.get("reward_signal_dims", -1)))
+		assert(0 < self.num_objectives)
+		assert(0 < self.reward_signal_dims)
+		# self.input_dim = (2 * self.reward_signal_dims)
+		# self.output_dim = num_objectives
+		# self.device = device
 
 		# Sets the unique classes for the objectives
 		# Currently assumes all objectives are unique and should share an equal weight when calculating the reward
@@ -46,16 +54,18 @@ class RewardModel(nn.Module):
 		# This tells the reward model to not incentivize improving the performance of this "single" objective as two objectives... or, in other terms, each objective's "importance of improving" is half that of a regular objective.
 		# xc[0:2] = 0
 
+
+			
 		
 		agent_bird_kwargs = {
-			**kwargs,
+			**config,
 			**dict(
 				reward_signal_dims=self.reward_signal_dims,
 				num_objectives=self.num_objectives,
 				explore_classes=xc,
 				# accelerator=accelerator,
 				device=self.device,
-				hidden_dims=hidden_dims,
+				hidden_dims=self.hidden_dims,
 			),
 		}
 		self.agent = agent_bird.AgentBird(**agent_bird_kwargs)

@@ -1,287 +1,334 @@
 Metadata-Version: 2.2
 Name: birdie-rl
-Version: 0.1.0
-Summary: A text-processing pipeline for multi-objective tasks
-Author-email: Sam Blouir <samblouir@gmail.com>
+Version: 0.1.1
+Summary: An automated reward modeling and text-processing pipeline for multi-objective training of language models.
+Author-email: Sam Blouir <samblouir@gmail.com>, "Jimmy T.H. Smith" <jsmith@stanford.edu>
 Project-URL: Source, https://github.com/samblouir/birdie
 Project-URL: Tracker, https://github.com/samblouir/birdie/issues
 Project-URL: Homepage, https://github.com/samblouir/birdie
 Requires-Python: >=3.8
 Description-Content-Type: text/markdown
-Requires-Dist: numpy
+Requires-Dist: numpy==1.26.4
 Requires-Dist: torch
 Requires-Dist: tiktoken
 Requires-Dist: datasets
 Requires-Dist: accelerate
 
-# Birdie: Multi-Objective Text Processing & Dynamic Mixture Control
+# Birdie: Reward-driven Automated Curricula
 
-Welcome to **Birdie**, a research-oriented codebase exploring advanced **multi-objective training procedures** for language models. This repository provides reference implementations of:
-- A **pipeline** system that spawns *Workers* to transform text data according to various *self-supervised objectives* (autoencoding, infilling, next-token prediction, prefix LM, selective copying, etc.).  
-- A **Birdie Controller** capable of sending “objective configurations” to each worker (including instructions on how to sample from different corruption or labeling strategies).
-- A flexible *SequencePacker* to efficiently combine many short sequences into fixed-length arrays suitable for batched model training.  
+**Birdie** was published at **EMNLP 2024**!
 
-While Birdie can operate with *any* model architecture (Transformers, SSMs, etc.), some training objectives were originally *motivated* for **state space models** (SSMs) that we show can strongly benefit from specialized tasks (e.g., copying, retrieval) throughout pre-training. Our ultimate goal is to enable dynamic mixture control—where the system continuously **adjusts** how often each objective is sampled, as well as their difficulties, guided by a small reward model or bandit.
+[The latest version of the paper is here available here.](https://github.com/samblouir/birdie/blob/main/Birdie__Advancing_State_Space_Models_with_Reward_Driven_Objectives_and_Curricula.pdf)
 
-Below is a thorough overview of the repository, guiding you through setup, usage, major components, tests, and how you can adapt it for your own experiments.
+Please check out our paper on arXiv: [arXiv:2411.01030](https://arxiv.org/abs/2411.01030).
+
+Birdie RL is an open-source framework designed to automate **multi-objective** training using a **reward-driven** curriculum.
+
+With dynamically mixes of training tasks -- including selective copying, next token prediction, autoencoding, infilling, copying, and prefix-LM -- Birdie automatically attempts to optimize model learning according to a **reward model** that tracks per-objective loss improvements, conditioned on the entire history.
+
+This codebase is designed to be hackable, allowing for swappable reward functions and objectives.
+Currently, decoder-only and causal or prefix-LM **state space models** and **Transformers** are supported.
+Birdie also features **sequence packing** for efficient batching.
+
+### Installation
+   ```bash
+   # For a standard installation
+   pip install git+https://github.com/samblouir/birdie.git
+
+   # To upgrade to the latest version
+   pip install git+https://github.com/samblouir/birdie.git --upgrade --no-deps
+
+   # To re-install and get the latest version
+   pip install git+https://github.com/samblouir/birdie.git --force-reinstall --no-deps
+   ```
+## Usage
+
+Below is a quick start for integrating Birdie RL in your training loop. The data_generator_fn is important. It should be able to return an iterable object for a given split, sharded by worker_id and num_workers, and shuffled using rng_seed.
+
+### Data generator function using HuggingFace's datasets:
+```python
+
+def huggingface_data_generator_fn(split, worker_id, num_workers, rng_seed=0):
+	"""
+	The data_generator function will be called by each dataloading worker.
+	This currently only data parallel training, where each accelerator has its own copy of the model.
+
+	This function should return a generator for a given
+	  - split (e.g., "train", "validation", "test")
+	  - shard defined by by worker_id and num_workers
+	  - shuffle data using rng_seed
+	"""
+
+	# Load the TinyStories dataset from Hugging Face
+	ds = load_dataset("roneneldan/TinyStories", split=split)
+
+	# Shard the dataset among multiple workers
+	ds = ds.shard(num_shards=num_workers, index=worker_id)
+
+	# Shuffle the dataset for randomness
+	ds = ds.shuffle(rng_seed)
+
+	# Return the prepared dataset
+	return ds
+
+
+```
+
+### Data generator function from a list:
+```python
+
+
+def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
+    """
+    The data_generator function will be called by each dataloading worker.
+    This currently only data parallel training, where each accelerator has its own copy of the model.
+
+    This function should return a generator for a given
+    - split (e.g., "train", "validation", "test")
+    - shards it by worker_id and num_workers
+    - shuffles the data using rng_seed
+    """
+
+    ds = dataloader.prepare_dataset_as_list()
+
+    # Load the TinyStories dataset from Hugging Face
+    if split == "train":
+      ds = ds["train"]
+    elif split == "validation":
+      ds = ds['validation']
+
+    # Shard the dataset among multiple workers
+    ds = ds[worker_id::num_workers]
+
+    # Shuffle the dataset for randomness
+    seeded_np_rng = np.random.default_rng(rng_seed)
+    seeded_np_rng.shuffle(ds)
+
+    # Return the prepared dataset
+    return ds
+
+  '''
+   If each element of ds_train looks like this:
+   {
+     "entry": {
+                 "text": "This is a story about a cat.",
+              },
+     "source": "www.facts.com",
+   }
+  
+   Then we can make a text_grabber_fn like this:
+  '''
+  
+  def text_grabber_fn(x):
+    return x["entry"]["text"]
+
+  '''
+   And pass it to the Birdie in the upcoming "Training code" codeblock.
+  '''
+
+
+```
+
+### Training code:
+```python
+from birdie_rl import Birdie
+from birdie_rl.example_usage.ul2_config import ul2_config
+import tiktoken
+import accelerate
+
+# Configuration
+config = {
+    "batch_size": 8,
+    "sequence_length": 2048,
+    "num_workers": 16,
+    "steps_between_evaluations": 32,
+    "num_steps": 4096,
+    "accelerator": accelerate.Accelerator(),
+    "tokenizer": tiktoken.get_encoding("o200k_base"),
+    "objectives": ul2_config,
+    "ds": data_generator_fn,  # Provide your dataset fn
+    "reward_fn": your_reward_function,   # Define your custom reward logic
+    "text_grabber_fn": text_grabber_fn,  # Define how to extract text from your dataset in whichever way you want
+}
+
+# Initialize Birdie
+birdie = Birdie(config)
+
+# Training Loop
+for step in range(config["num_steps"]):
+    # Periodic evaluation
+    if birdie.time_for_eval(step):
+        model.eval()
+        for (objective_name, batch) in birdie.measure_validation_losses():
+            loss = model(**batch)  # Inference call
+            birdie.log_validation_loss(key=objective_name, loss=loss, step_idx=step)
+         model.train()
+
+    # Fetch the next training sample from Birdie
+    sample = birdie.get_next_training_sample()
+    loss = model(**sample)
+    ...
+
+```
+
+You can find more detailed examples in:
+- **`example_usage/example.py`** for a minimal script
+- **`example_usage/ul2_config.py`** for UL2-style objectives
+- **`example_usage/utils.py`** for custom reward functions and data generator demos
 
 ---
 
-## Table of Contents
-1. [Key Concepts in Birdie](#key-concepts-in-birdie)
-2. [Installation & Dependencies](#installation--dependencies)
-3. [Repository Layout](#repository-layout)
-4. [How the Pipeline Works](#how-the-pipeline-works)
-5. [Objectives & Configuration](#objectives--configuration)
-6. [Sequence Packing](#sequence-packing)
-7. [Minimal Training Example](#minimal-training-example)
-8. [Dynamic Mixture Control (Birdie Mixture Controller)](#dynamic-mixture-control-birdie-mixture-controller)
-9. [Testing & Coverage](#testing--coverage)
-10. [Future Directions](#future-directions)
-11. [Citing & License](#citing--license)
+
+<div align="center">
+  <a href="https://github.com/samblouir/birdie/blob/main/birdie_emnlp_2024_poster.jpg?raw=true"><img src="https://github.com/samblouir/birdie/blob/main/birdie_emnlp_2024_poster.jpg?raw=true" alt="Birdie EMNLP 2024 Poster" width="800" /></a>
+</div>
 
 ---
 
-## 1. Key Concepts in Birdie
+## Features & Highlights
 
-1. **Multi-Objective Training**  
-   Instead of relying on a single “next-token-prediction” objective, Birdie supports a variety of *self-supervised tasks* (autoencoding, infilling, prefix LM, selective copying, etc.). Each objective can drastically alter how text is corrupted or labeled. The codebase is designed to easily add new objectives or modify existing ones.
+- **Automated Multi-Objective Training**  
+  This all-in-one pipeline easily adds an automated curriculum with multi-objective training, including **autoencoding**, **deshuffling**, **infilling**, **copying**, etc. all with customizable parameters.
 
-2. **Worker-Controller Architecture**  
-   Birdie uses separate *Workers* that continuously fetch raw text (e.g., from a dataset) and process it into `(input_ids, label_ids, segment_ids, etc.)`. A central *Controller* sends instructions on *which tasks* to sample next. This design scales to multi-core setups and incorporates reinforcement signals to pick *the best mixture of tasks*.
+- **Character-level noising functions**
+   By default, Birdie's noise functions work on the character-level for text. Long inputs are automatically sliced into suitable chunks to fit into your desired maximum sequence length.
 
-3. **Sequence Packer**  
-   Short sequences are combined into a single fixed-size array for efficient batching. The packer merges `(input_ids, label_ids, segment_ids, etc)` from multiple objectives into a single `[batch_size, sequence_length]` tensor, while respecting leftover space, segment boundaries, and so on. Unused labels are set to -100.
+- **Reward-Driven Curriculum**  
+  Birdie uses a Transformer reward model to adaptively select objectives, optimizing training based on sub-loss improvements, historical objective mixture rates, and any other factors.
 
-4. **Reward-Driven Mixture** (Prototype)  
-   In principle, Birdie uses a small reward model that tracks *loss improvements* for each objective and difficulty setting. Over time, it can learn which tasks to emphasize to maximize overall loss reduction. This code base supports a Transformer to act as the agent, in either a basic causal setup, as well as a new bidirectional diffusion-based configuration.
+- **Efficient Data Pipeline**  
+  Integrates multi-worker processing and **sequence packing** to reduce wasted compute, boosting effective tokens per second throughput during training.
+
+- **Huggingface Accelerate Support**
+   Birdie is compatible with Huggingface's Accelerate library, allowing for easy scaling to multiple GPUs or TPUs. Birdie currently supports model parallel setups for the dataloader. JAX compatibility to be added soon.
+
+- **Modular Architecture**  
+  Birdie is designed to be hackable. Easily add new objectives, custom reward functions, and other pipeline components to experiment with different strategies.
+
+- **Paper**  
+   Birdie was published at EMNLP 2024, where it brought SSMs and Transformer models to state-of-the-art performance on several tasks, compared to standard next token prediction training.
+
 
 ---
 
-## 2. Installation & Dependencies
+## Installation
+
+### Simplest approach
+   ```bash
+   pip install git+https://github.com/samblouir/birdie.git
+   ```
+
+   Please see "example_usage/example.py" for an example of how to use Birdie with your Torch (or, with minimal modifications, JAX) training loop.
+
+### In-depth approach
+
+#### Prerequisites
+- Python 3.8+
+- Git
+
+#### Steps
 
 1. **Clone the Repository**  
    ```bash
    git clone https://github.com/samblouir/birdie.git
-   cd birdie
+   cd birdie-rl
    ```
 
-2. **Install Python Requirements**  
-   Birdie requires `numpy`, `torch`, `tiktoken`, `datasets`, and (optionally) `accelerate` for multi-GPU. You can install them via:
+2. **Install Dependencies**  
+   Birdie RL relies on `numpy`, `torch`, `datasets`, and `accelerate`. Install them via:
    ```bash
    pip install -r requirements.txt
    ```
-   Or manually:
-   ```bash
-   pip install numpy torch tiktoken datasets accelerate
-   ```
+   *(Alternatively, manually `pip install numpy torch datasets accelerate`.)*
 
-3. **Verify the Installation**  
-   After installing, run the test suite:
+3. **Verify Setup**  
+   Test everything with a sample script:
    ```bash
-   cd tests
-   bash run_tests.sh
+   python example_usage/example.py
    ```
-   This script exercises each objective with small demo inputs, then runs a Python-based coverage check. You should see console output summarizing which tests pass/fail.
 
 ---
 
-## 3. Repository Layout
+## Codebase Overview
 
-Below is a simplified structure (omitting some files and older test references). Key directories include:
-
+**Directory Structure** (simplified):
 ```
-birdie/
-  modeling/
-    basemodel.py      # (Example Transformer-like model)
-    tokenizer.py      # Tiktoken-based Tokenizer
-    toy_model.py      # Simplistic example model
+birdie_rl/
+  birdie_reward_model/
+    birdie.py           # Main Birdie class
+    agent_bird.py       # RL agent logic
+    reward_model.py     # Simplified API for the reward model
+    rotary.py           # Rotary positional encoding utilities
+    gated_ssm_agent.py  # Default Transformer
+  example_usage/
+    example.py          # Minimal usage script
+    ul2_config.py       # UL2-inspired objectives
+    utils.py            # Shows functions Birdie needsreward fn, data gen, etc.
   objectives/
-    base.py           # Abstract base class for objectives
-    autoencoding.py   # Autoencoding objective
-    infilling.py      # Infilling objective
-    copying.py        # Copying objective
-    deshuffling.py    # Deshuffling objective
+    base.py              # BaseObjective class. Shows how to add objectives.
+    selective_copying.py # A new structured-deshuffling objective introduced in Birdie
+    autoencoding.py      # BART-style autoencoding, with deshuffling support
+    infilling.py        
+    copying.py          
+    deshuffling.py      
     next_token_prediction.py
     prefix_language_modeling.py
-    selective_copying.py
-    utils.py
   pipeline/
-    main_controller.py
-    simple_pipeline.py
-    worker.py
-  tests/
-    test_*.py         # Tests for each objective, plus pipeline tests
-  load_objective.py   # A registry-based loader for objective classes
-  packer.py           # SequencePacker to combine samples into arrays
-  pipeline_generator.py
-  minimal_trainer.py  # Example script for training a toy model
-  simple_usage.py     # Small demonstration of using objectives manually
-readme.md            # This file (the Birdie README)
+    main_controller.py  # Objective distribution & worker coordination
+    packer_batcher.py   # Sequence packing logic
+    worker.py           # Worker processes to transform data
+    pipeline_generator.py
+  load_objective.py      # Registry for objective loading
+  ...
 ```
 
-**High-Level Flow**  
-- `pipeline/main_controller.py`: A “MainController” that decides how to sample objectives.  
-- `pipeline/worker.py`: A worker that loops over incoming instructions, picks text samples from a dataset, applies an objective to produce `(input_ids, label_ids)`, and sends them through a *SequencePacker*.  
-- `packer.py`: Contains the `SequencePacker` and `PackedArray` classes.  
+**Key Components**:
+- **`birdie_reward_model/`**  
+  Hosts the RL agent (`agent_bird.py`), the main Birdie orchestrator (`birdie.py`), and optional gating/MLP code.  
+- **`objectives/`**  
+  Houses all self-supervised tasks (infilling, copying, etc.) derived from `BaseObjective`.
+- **`pipeline/`**  
+  Manages multi-process data generation, sequence packing, and distributing tasks among workers.
 
 ---
 
-## 4. How the Pipeline Works
+## Contributing
 
-A typical pipeline run (e.g., `pipeline/simple_pipeline.py`) looks like this:
+We **strongly welcome** contributions! Whether it’s a new objective, a fresh reward function, or bug fixes, we appreciate your help in making Birdie RL better.
 
-1. **Queues**: We create two queues: 
-   - `tasks_queue` for sending objective distributions or “None” sentinel to the worker.
-   - `results_queue` for collecting finished batches from the worker.
+Please feel free just post in discussion.
+Please open issues for feature requests or bug reports.
 
-2. **MainController**: It sets an initial distribution of objectives (e.g., 50% autoencoding, 30% copying, 20% infilling) and pushes that to the worker.
+Alternatively, you can fork the repository and submit a pull request with your changes. Here’s a quick guide:
+1. Fork the repository  
+2. Create a branch (`git checkout -b feature/awesome-update`)  
+3. Commit your changes (`git commit -m "Add something awesome"`)  
+4. Push & open a Pull Request  
 
-3. **Worker**: The worker repeatedly:
-   - Picks text from its data source (like the “TinyStories” dataset).
-   - Randomly selects one objective (based on the probabilities from the MainController).
-   - Applies the objective to transform text into `(input_ids, label_ids)`.
-   - Packs that sample into the `SequencePacker`. Once the packer is “full enough,” it emits a sub-batch. 
-   - Once enough sub-batches accumulate (equal to the pipeline’s `batch_size`), the worker sends a *batch* to the `results_queue`.
-
-4. **Training Loop**: You read batches from the `results_queue` (e.g., in `pipeline_generator.py`), convert them to PyTorch Tensors, then pass them to your model.  
-
-5. **Stopping**: After collecting your desired number of batches, you send a sentinel (`None`) to the worker or let the `MainController` do so. The worker thread then finishes.
 
 ---
 
-## 5. Objectives & Configuration
+## License & Citation
 
-### Common Objectives
+Birdie RL is released under the **Apache License 2.0**. See the [LICENSE](https://www.apache.org/licenses/LICENSE-2.0) file for details.
+The intent is to be as permissible as possible for any kind of usage.
 
-1. **Autoencoding**: Replaces random spans in the input text with placeholders; the label is the original text up to some boundary.  
-2. **Infilling**: Similarly inserts placeholders `[mask_0]`, etc., but places masked tokens in the label sequence.  
-3. **Copying**: The input is basically the text itself (optionally with a prompt token), and the label is the same text (classic sequence copying).  
-4. **Deshuffling**: Shuffle tokens in the input, but the label remains the original.  
-5. **Next Token Prediction**: Standard causal language modeling—only the label has the text.  
-6. **Prefix Language Modeling**: The input is the first fraction (prefix), and the label is the remainder (suffix).  
-7. **Selective Copying**: A more complex setup that places “instructions” and “context” in the input, and the relevant text is in the label.
+If you use (or build on) Birdie RL in your work, kindly cite our **EMNLP 2024** paper:
 
-### Instantiating an Objective
-
-Objectives are typically created via `load_objective(name, config_overrides)`. For example:
-
-```python
-from birdie_paradigm.load_objective import load_objective
-from birdie_paradigm.modeling.tokenizer import Tokenizer
-
-tok = Tokenizer()
-obj = load_objective(
-    "infilling", 
-    {"corruption_rate": 0.2, "tokens_per_mask": 3, "tokenizer": tok}
-)
-
-result = obj("This is some sample text.")
-print(result["input_ids"])  # masked input
-print(result["label_ids"])  # tokens needed to reconstruct
-```
-
-**Config Overrides**: Each objective has a dataclass config (`AutoencodingConfig`, `InfillingConfig`, etc.) with fields like `remaining_space`, `corruption_rate`, etc. You can override them by passing a dictionary.
-
----
-
-## 6. Sequence Packing
-
-Birdie’s `SequencePacker` merges multiple `(input_ids, label_ids)` into a fixed `[sequence_length]` array. Key steps:
-
-1. Each sample tries to fit into an existing `PackedArray`. If it does not fit, a fresh `PackedArray` is created.
-2. The label portion is offset by one token (teacher forcing) or kept separate, depending on the objective design.  
-3. Once leftover space is below a threshold (`minimum_sequence_length`), the `PackedArray` is marked “ready” and can be popped out as a sub-batch.  
-4. Finally, the sub-batches are stacked into `[batch_size, sequence_length]` tensors for a training step.
-
-This approach is helpful for small text documents or partial corruption tasks where sequences can be quite short. Instead of creating many micro-batches, you “pack” them into a large array efficiently.
-
----
-
-## 7. Minimal Training Example
-
-We provide a toy script in **`minimal_trainer.py`**. It shows how to:
-
-1. **Initialize** a small model (`toy_model.SimpleModel`) or your own PyTorch model.
-2. **Create** a data generator by calling `pipeline_data_generator` (which returns `(input_ids, label_ids, segment_ids, attention_mask)`).
-3. **Iterate** over the data in a training loop:
-   ```python
-   # minimal_trainer.py excerpt
-   from birdie_paradigm.pipeline_generator import pipeline_data_generator
-
-   for batch in pipeline_data_generator(
-       max_batches=100,
-       batch_size=8,
-       sequence_length=256,
-       objectives_config=[...]
-   ):
-       # Move batch to GPU if needed
-       # Pass it to your model
-       # Compute loss, do optimizer steps
-   ```
-4. **Stop** after `max_batches` or some other criterion.
-
-This example is not fully production-ready but demonstrates how Birdie’s pipeline can plug directly into a training loop.
-
----
-
-## 8. Dynamic Mixture Control (Birdie Mixture Controller)
-
-A hallmark of the **Birdie** approach is the *potential* for **dynamic mixture control**—where we **continuously** adjust the sampling rates of different objectives based on a “reward” that measures their utility. 
-
-### Core Ideas
-
-- **Multiple Objectives**: Instead of picking a single “denoising” or “NTP” objective, we maintain a *pool* (infilling, copying, deshuffling, etc.).
-- **Action** = Probability Distribution Over Objectives: Each training epoch/segment picks a distribution (e.g., 40% infilling, 30% copying, 20% autoencoding, etc.).
-- **Reward** = Sub-Loss Improvements: We measure how much each objective’s specialized loss improves the model. If “selective copying” helps drastically, we might increase its probability next round.
-- **Bandit or RL Algorithm**: Over time, an internal policy learns which objectives yield the best overall improvement in the tasks that matter (like long-range retrieval for an SSM).
-
-### In This Repository
-
-- We have placeholders for advanced mixture updates in `main_controller.py` and a general structure for picking objective distributions. 
-- Full RL/bandit integration is *a WIP*—the code currently uses a static distribution or can be manually updated mid-run. 
-- A more advanced version can incorporate a small “reward model” to predict each objective’s sub-loss improvements and automatically sample from the best.
-
-For a detailed conceptual explanation, see [the Birdie RL-based Mixture Explanation](https://arxiv.org/abs/2411.01030) or the summary commentary included above in the repository.
-
----
-
-## 9. Testing & Coverage
-
-- **Objective-Level Tests**: Each objective in `objectives/*.py` has a corresponding test file in `tests/` (e.g., `test_infilling.py`).
-- **Pipeline Tests**: `test_pipeline.py` runs an end-to-end check with a “ShortWorker” and ensures sub-batches can be processed.
-- **Coverage**: After `bash run_tests.sh`, a coverage report is displayed in the console, showing which lines are exercised.  
-
-**Troubleshooting**:
-- If coverage is incomplete, check that dependencies are installed (e.g., `coverage` from `pip install coverage`).
-- If certain tests time out, your environment might be slow or lacking the `datasets` package. You can swap the dataset with your own local text to speed up testing.
-
----
-
-## 10. Future Directions
-
-- **Full Dynamic Mixture RL**: Implement a real reward model that tracks sub-loss improvements, orchestrating a *bandit* or *policy gradient* to pick objectives.  
-- **Extensive SSM Integrations**: Provide a dedicated SSM (e.g., Gated S4, Hyena, etc.) that trains end-to-end with Birdie, focusing on long-range retrieval tasks.  
-- **Stronger Real-World Objectives**: Add chunked document retrieval, text QA, or alignment tasks for instruction-like training, integrated into the same pipeline.  
-
----
-
-## 11. Citing & License
-
-Birdie is released under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).  
-If you use Birdie or reference its multi-objective approach in academic work, please cite:
-
-```
-@misc{Blouir2024Birdie,
-    title={Birdie: Advancing State Space Models with Reward-Driven Objectives and Curricula},
-    author={Sam Blouir and Jimmy T.H. Smith and Antonios Anastasopoulos and Amarda Shehu},
-    journal={arXiv preprint arXiv:2411.01030},
-    year={2024}
+```bibtex
+@inproceedings{blouir-etal-2024-birdie,
+    title = "Birdie: Advancing State Space Language Modeling with Dynamic Mixtures of Training Objectives",
+    author = "Blouir, Sam and Smith, Jimmy T.H. and Anastasopoulos, Antonios and Shehu, Amarda",
+    booktitle = "Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing",
+    month = nov,
+    year = "2024",
+    address = "Miami, Florida, USA",
+    publisher = "Association for Computational Linguistics",
+    url = "https://aclanthology.org/2024.emnlp-main.541/",
+    doi = "10.18653/v1/2024.emnlp-main.541",
+    pages = "9679--9705",
 }
 ```
 
-We welcome contributions and issues. Feel free to submit PRs or open tickets with suggestions, bug reports, or expansions of the dynamic mixture pipeline!
 
----
 
-**We hope Birdie provides a clear, flexible foundation for multi-objective text training**—especially if you want to explore RL-based objective sampling for advanced architectures like SSMs. Enjoy experimenting!

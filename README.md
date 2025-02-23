@@ -90,25 +90,26 @@ def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 
     # Return the prepared dataset
     return ds
+  ```
 
-  '''
+### Important: Element grabber function
    If each element of ds_train looks like this:
+   ```python
    {
      "entry": {
                  "text": "This is a story about a cat.",
               },
      "source": "www.facts.com",
    }
+   ```
   
-   Then we can make a text_grabber_fn like this:
-  '''
-  
+   Then we can make a text_grabber_fn like this to tell the dataloader how to extract the text from each element:
+  ```  
   def text_grabber_fn(x):
     return x["entry"]["text"]
+  ```
 
-  '''
-   And pass it to the Birdie in the upcoming "Training code" codeblock.
-  '''
+   Then, pass it to the Birdie in the upcoming "Training code" codeblock.
 
 
 ```
@@ -204,7 +205,21 @@ You can find more detailed examples in:
 
    Please see "example_usage/example.py" for an example of how to use Birdie with your Torch (or, with minimal modifications, JAX) training loop.
 
-### In-depth approach
+## Dataloader Debugging
+
+Data processing issues?
+in *birdie_rl/pipeline/worker.py*, uncomment the print line in this function:
+```python
+  	def print(self, *args, **kwargs):
+      """
+      Helper method to print with worker info.
+      """
+      # print(*args, **kwargs) ## Uncomment this to enable worker debug printing
+      pass
+```
+
+### In-depth Installation Instructions
+
 
 #### Prerequisites
 - Python 3.8+
