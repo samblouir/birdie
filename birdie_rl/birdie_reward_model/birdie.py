@@ -86,6 +86,17 @@ def default_move_to_gpu_fn(batch: Dict[str, Any], accelerator: accelerate.Accele
 	Returns:
 		dict: A dictionary with the same keys, whose values are now on self.accelerator.device.
 	"""
+
+	if not isinstance(batch, dict):
+		tp = []
+		tp.append(f"#" * 60,)
+		tp.append(f"*" * 60,)
+		tp.append(f"  FATAL EXCEPTION: BATCH not a dict? dtype(batch): {dtype(batch)},  batch: {batch}")
+		tp.append(f"*" * 60,)
+		tp.append(f"#" * 60,)
+		print("\n".join(tp), flush=True) # joined and flushed to improve multi-processing print clarity (so worker's overlap their print lines less often).
+		raise ValueError(f"  FATAL EXCEPTION: batch is a string?? batch: {batch}")
+	
 	device = accelerator.device if accelerator else torch.device("cpu")
 	for k, v in batch.items():
 		if isinstance(v, torch.Tensor):
@@ -365,10 +376,12 @@ class Birdie:
 				while len(current_samples) < self.num_validation_batches:
 					batch = next(ds_validation_iter, None)
 					if batch is None:
-						if 0 < en(current_samples):
+						if 0 < len(current_samples):
 							break
 						else:
 							continue
+					## Uncomment to see each batch coming in
+					# print(f"  objective: {objective}, objective_idx: {objective_idx},  controller: {controller},  batch: {batch}")
 					current_samples.append(batch)
 
 				self.validation_ds_per_objective[objective_idx] = {
@@ -407,10 +420,15 @@ class Birdie:
 
 		ds_validation = self.get_validation_samples()  # Ensure validation data is available
 
+		# for ds_validation_idx, (key, value) in enumerate(ds_validation.items()):
+		# 	print(f"  ds_validation[{key}]: {value}")
+		# exit()
+
 		flat_batches = []
 		for _, value in ds_validation.items():
 			nickname = value["objective"].get("hash_str", value["objective"]["nickname"])
 			for batch in value["batches"]:
+				# print(f"  batch: {batch}")
 				if self.move_to_gpu_fn is not  None:
 					batch = self.move_to_gpu_fn(batch)
 				flat_batches.append((nickname, batch))
@@ -542,7 +560,8 @@ class Birdie:
 		including the objective name and probability.
 
 		Returns:
-			list of dict: A list of dictionaries, each containing the 'name' and 'prob' keys.
+			ret_dict: A list of dictionaries, each containing (at least) 'name' and 'prob' keys for an objective.
+			formatted_ret_dict_str: A formatted string representation of the return value.
 		"""
 		ret_dict = {}
 		current_action = self.get_current_action()
@@ -575,7 +594,9 @@ class Birdie:
 				"current_sampling_probability": float(current_action[objectives_idx]),
 				"config": dict(sorted({k:v for k,v in config.items() if k not in ["name"]}.items())),
 			}
-		return ret_dict, json.dumps(ret_dict, indent=4)
+
+		formatted_ret_dict_str = json.dumps(ret_dict, indent=4)
+		return (ret_dict, formatted_ret_dict_str)
 			
 
 
@@ -606,6 +627,8 @@ if __name__ == "__main__":
 		return [str(np.arange(x+1)) for x in range(512, 1024)]
 	
 	def text_grabber_fn(x):
+		# This just returns a string - our data_generator_fn is returning a list of strings.
+		# If data_generator_fn was returning a list of dicts, we would receieve each dict here and would be free to apply whichever transformations we want.
 		return x
 
 	tokenizer = tiktoken.get_encoding("o200k_base")
@@ -613,13 +636,12 @@ if __name__ == "__main__":
 	accelerator = accelerate.Accelerator()
 	config = {
 		"tokenizer": tokenizer,
-		"total_steps": 10000,
-		"steps_between_evaluations": 500,
+		"total_steps": 16_384,
+		"steps_between_evaluations": 1,
 		"batch_size": 8,
 		"max_sequence_length": 2048,
 		# "minimum_sample_length": 256,
 		"accelerator": accelerator,
-		"validation_objectives": objectives_config,
 		"ds": data_generator_fn,
 		"text_grabber_fn": text_grabber_fn,
 	}
@@ -630,9 +652,9 @@ if __name__ == "__main__":
 	print("*" * 60)
 	print("  Showing validation samples:")
 	ds_validation = birdie.get_validation_samples()
-	for idx, val_info in ds_validation.items():
-		val_info["batches"] = f"{len(val_info['batches'])} samples"
-		print(f"  ds_validation[{idx}]: {val_info}")
+	# for idx, val_info in ds_validation.items():
+	# 	val_info["batches"] = f"{len(val_info['batches'])} samples"
+	# 	print(f"  ds_validation[{idx}]: {val_info}")
 	print("  Created Birdie!")
 	print("*" * 60)
 
@@ -640,11 +662,17 @@ if __name__ == "__main__":
 
 	# Mocking two 'training + validation' cycles
 	for _ in range(2):
-		# if birdie.time_for_eval():
-		if True:
+		if birdie.time_for_eval(step_idx=1):
+		# if True: # unneeded when setting steps_between_evaluations to 1
 			# Start measuring
 			flat_batches = birdie.measure_validation_losses()
 			# Fake computation of losses
 			for validation_batches_idx, (nickname, batch) in enumerate(flat_batches):
 				fake_loss = 1.1 + validation_batches_idx * 0.1 + seeded_np_rng.rand()
-				birdie.log_validation_losses(nickname, fake_loss)
+				birdie.log_validation_loss(nickname, fake_loss)
+			action = birdie.get_current_action()
+			print(f"  action: {action}")
+			verbose_action, verbose_action_str = birdie.get_verbose_action()
+			print(f"  verbose_action: {verbose_action_str}")
+	
+	birdie.close()

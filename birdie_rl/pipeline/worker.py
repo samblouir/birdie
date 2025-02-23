@@ -38,7 +38,7 @@ class Worker:
 	  3) Transforms text with load_objective(...) => (input_ids, label_ids).
 	  4) Adds them to a Batcher (from packer_batcher.py).
 	  5) If batch is ready/full, pops and sends to results_queue.
-	  6) On sentinel (None in tasks_queue) or finished epoch (for non-infinite loops) calls close().
+	  6) On sentinel (None in tasks_queue) or finished epoch (for non-infinite loops), the worker's close() function is called. The worker will attempt to flush any partial batch it may have (timeout=0.5), then it will exit.
 	"""
 
 	def __init__(
@@ -109,16 +109,18 @@ class Worker:
 
 		self.print(f"[Worker {self.worker_id} (split: {self.split})] Created with batch_size={batch_size}, seq_length={sequence_length}")
 
-	def print(self, *args, **kwargs):
+	def print(self, *args, verbosity_level=0, min_verbosity_level=1, **kwargs):
 		"""
 		This method helps us easily specifically silence worker debug info.
 		"""
-		# print(*args, **kwargs) ## Uncomment this to enable worker debug printing
+		# print(*args, **kwargs); return; ## Uncomment this to enable all worker debug printing
+		if min_verbosity_level <= verbosity_level:
+			print(*args, **kwargs) ## Uncomment this to enable worker debug printing
 		pass
 
 	def close(self):
 		"""
-		Flushes leftover partial batches (if any), and then exits the process.
+			Flushes leftover partial batches (if any), and then exits the process.
 		"""
 		pass
 		self.print(f"[Worker {self.worker_id} (split: {self.split})] close() called => Attempting to flush partial batch if any.")
@@ -128,19 +130,25 @@ class Worker:
 		if current_status == "ready":
 			final_data = self.batcher.pop(peek=False)
 			if final_data is not None:
-				self.print(f"[Worker {self.worker_id} (split: {self.split})] Popped leftover partial batch. Sending to results_queue.")
+				self.print(f"[Worker {self.worker_id} (split: {self.split})] Popped leftover partial batch. Sending to results_queue.", verbosity_level=0)
 				item = {
 					"worker_id": self.worker_id,
 					"batch_items": final_data,
 					"objective_name": "partial_leftover",
 				}
-				self.results_queue.put(item)
+				try:
+					if isinstance(final_data, str):
+						raise ValueError(f"[Worker {self.worker_id} (split: {self.split})] ERROR: final_data is a string: {final_data}")
+					self.results_queue.put(item, timeout=5,)
+				except Exception as e:
+					self.print(f"  worker.close() => results_queue.put() failed. Exiting via os._exit(1)! e: {e}")
+
 		else:
 			self.print(f"[Worker {self.worker_id} (split: {self.split})] No leftover partial batch to flush (or not ready).")
 			pass
 
-		self.print(f"[Worker {self.worker_id} (split: {self.split})] Exiting now via os._exit(0).")
-		os._exit(0)
+		self.print(f"[Worker {self.worker_id} (split: {self.split})] Exiting now via os._exit(1).")
+		os._exit(1)
 
 	def initialize_data_iterator(self):
 		"""
@@ -295,8 +303,20 @@ class Worker:
 					"batch_items": batch_data,
 					"objective_name": objective_name,
 				}
-				self.results_queue.put(item)
+
+				if isinstance(batch_data, str):
+					raise ValueError(f"[Worker {self.worker_id} (split: {self.split})] ERROR: batch_data is a string: {batch_data}")
+				
+				while True:
+					try:
+						self.results_queue.put(item, timeout=0.5)
+						break
+					except queue.Full:
+						self.print(f"[Worker {self.worker_id} (split: {self.split})] results_queue.put() failed => retrying...")
+						continue
+
 				self.print(f"[Worker {self.worker_id} (split: {self.split})] Sub-batch sent to results_queue. results_queue.qsize()={self.results_queue.qsize()}, batcher.get_remaining_space()={self.batcher.get_remaining_space()}")
+
 			else:
 				self.print(f"[Worker {self.worker_id} (split: {self.split})] Batcher.pop returned None (unexpected).")
 				pass

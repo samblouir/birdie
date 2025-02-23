@@ -28,17 +28,17 @@ class RewardModel(nn.Module):
 			#   device="cpu",
 			  config: dict,
 		):
-		print(f'  HELLO!!!!!!!!!!!!!!!!!!!!!')
-
 		super().__init__()
 		self.__dict__.update(config)
 
 		d = self.__dict__
-		for d_idx, (key, value) in enumerate(d.items()):
-			print(f"  d[{key}]: {value}")
 
 		# self.reward_signal_dims = reward_signal_dims
 		self.num_objectives = (config.get("num_objectives", config.get("reward_signal_dims", -1)))
+
+		for d_idx, (key, value) in enumerate(dict(sorted(d.items())).items()):
+			config['accelerator'].print(f"  RewardModel created with the config [{key}]: {value}")
+
 		assert(0 < self.num_objectives)
 		assert(0 < self.reward_signal_dims)
 		# self.input_dim = (2 * self.reward_signal_dims)

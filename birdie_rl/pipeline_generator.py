@@ -1,5 +1,5 @@
 # pipeline_generator.py
-
+import os
 import threading
 import queue
 from typing import List
@@ -57,7 +57,8 @@ def datagen(
 			continue
 
 		if batch_dict is None:
-			# If we ever got the sentinel, we're done
+			# If we ever got the "None" sentinel that stems from birdie.close(), we should exit our while look, send out "None" on our queues to cause those threads or processes to exit also, and then try to join all of our threads.
+			# TODO: FIX THIS. PATCH IMPLEMENTED BELOW USING os._exit(1)
 			break
 
 		# tp = {
@@ -74,6 +75,8 @@ def datagen(
 
 		batches_received += 1
 		# print(f"  batch_dict: {batch_dict}")
+		
+			
 		batch = batch_dict["batch_items"]
 		# print(f"  received batch: {batch.keys()}, results_q.qsize(): {results_q.qsize()}, output_q.qsize(): {output_q.qsize()}, tasks_q.qsize(): {tasks_q.qsize()}, sample_q.qsize(): {sample_q.qsize()}", flush=True,)
 
@@ -91,10 +94,13 @@ def datagen(
 	output_q.put(None)
 
 	# Make sure threads close properly (you can optionally join them here)
-	for idx, worker_thread in enumerate(worker_threads):
-		print_fn(f"  Joining all pipeline worker threads. ({idx+1} of {len(worker_threads)})", flush=True,)
-		worker_thread.join()
-	print_fn(f"  All pipeline worker threads joined.", flush=True,)
+	# for idx, worker_thread in enumerate(worker_threads):
+	# 	print_fn(f"  Joining all pipeline worker threads. ({idx+1} of {len(worker_threads)})", flush=True,)
+	# 	worker_thread.join()
+	# print_fn(f"  All pipeline worker threads joined.", flush=True,)
+
+	# Patch to try and solve non-exiting threads or processes
+	os._exit(1)
 
 def samples_to_batch(
 		sample_queue: mp.Queue,
