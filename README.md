@@ -63,7 +63,7 @@ def huggingface_data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 
 	ds_train = ds["train"].tolist()
 	ds_validation = ds["validation"].tolist()
-  
+
 	def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 		"""
 		The data_generator function will be called by each dataloading worker.
@@ -90,6 +90,27 @@ def huggingface_data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 
 		# Return the prepared dataset
 		return ds
+
+  '''
+   If each element of ds_train looks like this:
+   {
+     "entry": {
+                 "text": "This is a story about a cat.",
+              },
+     "source": "www.facts.com",
+   }
+  
+   Then we can make a text_grabber_fn like this:
+  '''
+  
+  def text_grabber_fn(x):
+    return x["entry"]["text"]
+
+  '''
+   And pass it to the Birdie in the upcoming "Training code" codeblock.
+  '''
+
+
 ```
 
 ### Training code:
@@ -111,6 +132,7 @@ config = {
     "objectives": ul2_config,
     "ds": data_generator_fn,  # Provide your dataset fn
     "reward_fn": your_reward_function,   # Define your custom reward logic
+    "text_grabber_fn": text_grabber_fn,  # Define how to extract text from your dataset in whichever way you want
 }
 
 # Initialize Birdie

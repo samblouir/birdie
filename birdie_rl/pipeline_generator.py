@@ -254,11 +254,12 @@ def pipeline_data_generator(
 			sequence_length=sequence_length,
 			batch_size=batch_size,
 			# batch_size=1,
-			min_seq_len_for_packing=config.get("min_seq_len_for_packing", 256),
+			min_seq_len_for_packing=config.get("min_seq_len_for_packing", 64),
 			data_generator=our_data_generator,
 			infinite_loop=infinite_loop,
 			split=split,
 			tokenizer=config['tokenizer'],
+			text_grabber_fn=config.get("text_grabber_fn", None),
 		)
 		worker_thread = mp.Process(target=worker.run, )
 		worker_threads.append(worker_thread)
@@ -282,7 +283,6 @@ def pipeline_data_generator(
 	)
 	# generator = datagen(**datagen_kwargs)
 	threading.Thread(target=datagen, kwargs=datagen_kwargs).start()
-	# threading.Thread(target=datagen, kwargs=datagen_kwargs).start()
 
 	def _generator():
 		ctr = 0

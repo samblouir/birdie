@@ -69,14 +69,14 @@ class Worker:
 		self.infinite_loop = infinite_loop
 		self.split = split
 
-		# --- FIX: For validation workers, force infinite looping so they never close after one pass.
-		# if self.split == "validation":
-		# 	print(f"[Worker {self.worker_id} (split: {self.split})] Forcing infinite_loop=True for validation.")
-		# 	self.infinite_loop = True
-
 		if text_grabber_fn is None:
 			# Default text grabber expects the record to have a "text" key.
-			text_grabber_fn = lambda rec: rec["text"]
+			def text_grabber_fn(x):
+				try:
+					return x["text"]
+				except Exception as e:
+					print(f"  FAILED:  Could not grab the key 'text' from the record: {x}")
+
 		self.text_grabber_fn = text_grabber_fn
 
 		# If no data_generator is provided, use our fallback.
@@ -227,7 +227,7 @@ class Worker:
 			while len(text_sample) < chunk_size:
 				try:
 					next_item = next(self.data_iter)
-					txt = self.text_grabber_fn({"text": next_item})
+					txt = self.text_grabber_fn(next_item)
 					text_sample = str(txt)
 					self.print(f"[Worker {self.worker_id} (split: {self.split})] got next text chunk of len={len(text_sample)}")
 				except StopIteration:
