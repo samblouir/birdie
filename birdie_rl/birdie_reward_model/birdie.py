@@ -62,6 +62,13 @@ def normalize_objective_probs(x):
 	Normalizes the probabilities of objectives in a list of dictionaries.
 	"""
 	total = sum(obj["prob"] for obj in x)
+
+	if (total <= 0.0):
+		for obj in x:
+			obj["prob"] = 1.0
+		total = len(x)
+		print(f"  WARNING: Total probability of objectives is {total}. Normalized each objective's probability to 1.0. (total number of objectives: {len(x)})")
+
 	for obj in x:
 		obj["prob_initial"] = (obj["prob"] / total)
 	return x
@@ -157,7 +164,7 @@ class Birdie:
 		self.objectives = config.get("objectives", default_objectives_config)
 		self.objectives = add_hashes(self.objectives)
 		self.objectives = normalize_objective_probs(self.objectives)
-		## Support coming soon
+		## Support for this argument is coming soon! It allows us to output a different sized vector than the number of objectives are sampling from.
 		self.reward_signal_dims = int(config.get("reward_signal_dims", len(self.objectives)))
 
 
@@ -188,7 +195,7 @@ class Birdie:
 
 		# Initialize the last action with default probabilities from the config (if any)
 		self.last_action = np.array([
-			obj.get("prob", 0.5) for obj in self.objectives
+			obj.get("prob", 1.0) for obj in self.objectives
 		])
 		self.last_action /= np.sum(self.last_action)
 
