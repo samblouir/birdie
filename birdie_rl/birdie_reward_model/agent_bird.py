@@ -278,28 +278,44 @@ def loss_penalty(x, scale='exp'):
 
 class AgentBird:
 	"""
-	Class representing a bandit-like or RL-like agent that uses a small MLP to
+	Class representing a bandit-like or RL-like agent that uses a small Transformer to
 	decide how to distribute actions (objectives) based on observed improvements.
 
-	Attributes (some left as placeholders):
-		reward_signal_dims (int): Dimensionality of the reward signal.
-		num_samples (int): Number of samples to generate at once (not always used).
-		num_objectives (int): Number of objectives or tasks.
-		...
+	
+
+	kwargs include:
+
+		- reward_signal_dims (int) (the model's output dimensions (the output values are currently in the range of [-1, 1]))
+		- num_objectives (int) (the model's input dimensions (i.e.: the number of training objectives objectives))
+		- hidden_dims (list) (hidden layer sizes for agent_bird's Transformer-based reward model)
+		- lr, weight_decay, etc. (floats) (hyperparameters for the agent's optimizer)
+		- explore_classes (list or array) (defines which parts of the action vector correspond to different objectives. For example, if you have next_token_prediction seq_len 512 and next_token_prediction seq_len 1024, you might want to group them together as a single objective. Otherwise, the model will make this worth twice as much as a normal objective. Your desries may vary!)
+		- device: "cpu", "cuda", etc.
+
+		- agent_explore_warmup_steps: Number of steps to cosine-decay exploration over. The agent will explore at the prob. of (agent_explore_max_rate to agent_explore_min_rate) over (agent_explore_num_steps).
+		- agent_explore_num_steps: Number of steps until the agent explores at agent_explore_min_rate.
+		- agent_explore_decay_steps: Number of steps to decay exploration.
+		- agent_explore_rate_min: Minimum exploration rate.
+		- agent_explore_rate_max: Maximum exploration rate.
+		- agent_explore_cook_period: Percentage of agent_explore_num_steps to hold exploration constant at agent_explore_cook_prob. This is similar to the common adafactor lr warmup over the first 10_000 steps. Can be over 1.0.
+
+		Common defaults for these from a dict of functions that update a config:
+		"agent_explore_num_steps": lambda x: x.get("agent_explore_num_steps", x['num_steps'] // 2),
+		"agent_explore_warmup_steps": lambda x: x.get("agent_explore_warmup_steps", min(2048, x['agent_explore_num_steps'] * 0.1)),
+		"agent_explore_decay_steps": lambda x: x.get("agent_explore_decay_steps", x['agent_explore_num_steps']//2), ## Causes exploration to decay to the minimum by the second half of training, allowing the agent to transition to exploitation.
+		"agent_explore_rate_min": lambda x: x.get("agent_explore_rate_min", 0.2),
+		"agent_explore_rate_max": lambda x: x.get("agent_explore_rate_max", 0.5),
+		"agent_explore_cook_period": lambda x: x.get("agent_explore_cook_period", 0.1),
+		"agent_explore_cook_prob": lambda x: x.get("agent_explore_cook_prob", 1.0),
+
 	"""
 
 	# Default class-level attributes
-	reward_signal_dims = None
 	num_samples = 1
-	num_objectives = 8
-	num_buckets = 1
-	num_metrics = num_objectives * 2
+	num_objectives = 8 # Uses the default 8 objectives in Birdie
+	reward_signal_dims = num_objectives # Output reward signal: see comments in __init__
 
-	# Training-related parameters
-	training_iter = 100_000
 	num_iterations = 16384
-	init_iters = 10
-	debug_steps = 0
 
 	# Schedule params
 	decay_steps = int(num_iterations * 0.1)
@@ -315,14 +331,24 @@ class AgentBird:
 	accelerator = None
 	device = None
 
-	# Optimization hyperparams
+
+	# Transformer config
+	### Number of top actions to average over
+	top_n = 8
+	### Number of hidden layers and hidden dims in the Transformer
+	hidden_dims = [256, 256, 256, 256]
+	### Forces this many training steps per update to the reward model, regardless of the loss.
+	grok_iterations = 200
+	### Optimization hyperparams
 	lr = 5e-4
 	lr_warmup_steps = -1
 	weight_decay = 0.1
 	div_loss_mult = 0
+	
 
-	# Minimum steps to force exploration
+	# Minimum step_idx where the exploration prob is forced to be at "agent_explore_cook_prob" (which defaults to 1.0)
 	must_explore_steps = 10
+	
 
 	# Training data placeholders
 	train_y = None
@@ -331,20 +357,7 @@ class AgentBird:
 	# RNG
 	np_rng_seed = 0
 
-	# MLP config
-	top_n = 1
-	hidden_dims = [256, 256, 256, 256]
-	grok_iterations = 200
 
-	# Rolling rewards
-	rolling_rewards_limit = 16
-	rolling_rewards = []
-
-	# Decay scheduling
-	n_steps_to_decay_per = 1000
-	decay_per_n_steps = 0.1
-
-	scheduler = None
 	training_stats = {}
 	training_explore_history = []
 
@@ -353,11 +366,13 @@ class AgentBird:
 	exploration_rate_max = 0.50
 	agent_num_actions_to_try = 4096
 
-	# placeholders for extra model references
-	conversion_model = None
+	# placeholders for extra model references (currently not implemented)
+	# "slop" correction model... not implemented. Was correcting disparities between observed and commanded objective sampling ratios. This is to be integrated into the worker to up-sample under-sampled objectives.
+	conversion_model = None 
+	# Diffusion model that predicts N-steps into the future, rather than this current greedy setup. Coming in a future update.
 	diffusion_model = None
 
-	# For bootstrapping
+	# For bootstrapping (currently not implemented)
 	bootstrap__data = None
 	bootstrap__strategy = None
 	bootstrap__random_seed = None
@@ -368,38 +383,12 @@ class AgentBird:
 
 	def __init__(self, **kwargs):
 		"""
-		Initialize the AgentBird instance. Merges kwargs into internal attributes.
+			Please see the comments for this class for additional details on the arguments.
 
-		kwargs include:
-
-		  - reward_signal_dims (int) (the model's output dimensions (the output values are currently in the range of [-1, 1]))
-		  - num_objectives (int) (the model's input dimensions (i.e.: the number of training objectives objectives))
-		  - hidden_dims (list) (hidden layer sizes for the MLP)
-		  - lr, weight_decay, etc. (floats) (hyperparameters for the agent's optimizer)
-		  - explore_classes (list or array) (defines which parts of the action vector correspond to different objectives. For example, if you have next_token_prediction seq_len 512 and next_token_prediction seq_len 1024, you might want to group them together as a single objective. Otherwise, the model will make this worth twice as much as a normal objective. Your desries may vary!)
-		  - device: "cpu", "cuda", etc.
-		  
-		  - agent_explore_warmup_steps: Number of steps to cosine-decay exploration over. The agent will explore at the prob. of (agent_explore_max_rate to agent_explore_min_rate) over (agent_explore_num_steps).
-		  - agent_explore_num_steps: Number of steps until the agent explores at agent_explore_min_rate.
-		  - agent_explore_decay_steps: Number of steps to decay exploration.
-		  - agent_explore_rate_min: Minimum exploration rate.
-		  - agent_explore_rate_max: Maximum exploration rate.
-		  - agent_explore_cook_period: Percentage of agent_explore_num_steps to hold exploration constant at agent_explore_cook_prob. This is similar to the common adafactor lr warmup over the first 10_000 steps. Can be over 1.0.
-
-		  Common defaults for these from a dict of functions that update a config:
-			"agent_explore_num_steps": lambda x: x.get("agent_explore_num_steps", x['num_steps'] // 2),
-			"agent_explore_warmup_steps": lambda x: x.get("agent_explore_warmup_steps", min(2048, x['agent_explore_num_steps'] * 0.1)),
-			"agent_explore_decay_steps": lambda x: x.get("agent_explore_decay_steps", x['agent_explore_num_steps']//2), ## Causes exploration to decay to the minimum by the second half of training, allowing the agent to transition to exploitation.
-			"agent_explore_rate_min": lambda x: x.get("agent_explore_rate_min", 0.2),
-			"agent_explore_rate_max": lambda x: x.get("agent_explore_rate_max", 0.5),
-			"agent_explore_cook_period": lambda x: x.get("agent_explore_cook_period", 0.1),
-			"agent_explore_cook_prob": lambda x: x.get("agent_explore_cook_prob", 1.0),
-
-
-
-
-
+			Initialize the AgentBird instance. Merges kwargs into internal attributes.
+			Note: If arguments are not provided, several defaults are used that assume a training step count of 16_384.
 		"""
+
 		# Merge any user-provided kwargs with the class defaults
 		self.__dict__.update(kwargs)
 
@@ -481,10 +470,8 @@ class AgentBird:
 			idx: result for idx, result in enumerate(self.explore_results)
 		}
 
-		# Typically we have num_objectives * 2 as a placeholder dimension
-		self.num_metrics = self.num_objectives * 2
 
-		# Build the MLP model used to predict rewards. By default we use a small MLP in gated_ssm_agent
+		# Build the Transformer model used to predict rewards. By default we use a small Transformer in gated_ssm_agent
 		self.model = gated_ssm_agent.MLPModel(
 			input_dim=self.reward_signal_dims + self.num_objectives,
 			output_dim=self.num_objectives,

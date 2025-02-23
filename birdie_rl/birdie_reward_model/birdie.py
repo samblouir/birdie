@@ -120,6 +120,7 @@ class Birdie:
 	def __init__(self, config: Optional[dict] = None):
 		"""
 		Initialize Birdie with a given config dictionary.
+		Note: If 'objectives' are not provided, the default objectives are used, and defaults assuming a training step count of 16_384 are assumed.
 
 		Args:
 			config (dict, optional): A dictionary containing configuration items. Some
@@ -139,7 +140,33 @@ class Birdie:
 				- 'validation_sequence_length': sequence length for validation samples.
 				- 'num_validation_batches': how many batches to fetch per objective for validation.
 				...
+
+				These are forwarded to agent_bird:
+					- reward_signal_dims (int) (the model's output dimensions (the output values are currently in the range of [-1, 1]))
+					- num_objectives (int) (the model's input dimensions (i.e.: the number of training objectives objectives))
+					- hidden_dims (list) (hidden layer sizes for agent_birds Transformer-based reward model)
+					- lr, weight_decay, etc. (floats) (hyperparameters for the agent's optimizer)
+					- explore_classes (list or array) (defines which parts of the action vector correspond to different objectives. For example, if you have next_token_prediction seq_len 512 and next_token_prediction seq_len 1024, you might want to group them together as a single objective. Otherwise, the model will make this worth twice as much as a normal objective. Your desries may vary!)
+					- device: "cpu", "cuda", etc.
+					
+					- agent_explore_warmup_steps: Number of steps to cosine-decay exploration over. The agent will explore at the prob. of (agent_explore_max_rate to agent_explore_min_rate) over (agent_explore_num_steps).
+					- agent_explore_num_steps: Number of steps until the agent explores at agent_explore_min_rate.
+					- agent_explore_decay_steps: Number of steps to decay exploration.
+					- agent_explore_rate_min: Minimum exploration rate.
+					- agent_explore_rate_max: Maximum exploration rate.
+					- agent_explore_cook_period: Percentage of agent_explore_num_steps to hold exploration constant at agent_explore_cook_prob. This is similar to the common adafactor lr warmup over the first 10_000 steps. Can be over 1.0.
+
+					Common defaults for these from a dict of functions that update a config:
+					"agent_explore_num_steps": lambda x: x.get("agent_explore_num_steps", x['num_steps'] // 2),
+					"agent_explore_warmup_steps": lambda x: x.get("agent_explore_warmup_steps", min(2048, x['agent_explore_num_steps'] * 0.1)),
+					"agent_explore_decay_steps": lambda x: x.get("agent_explore_decay_steps", x['agent_explore_num_steps']//2), ## Causes exploration to decay to the minimum by the second half of training, allowing the agent to transition to exploitation.
+					"agent_explore_rate_min": lambda x: x.get("agent_explore_rate_min", 0.2),
+					"agent_explore_rate_max": lambda x: x.get("agent_explore_rate_max", 0.5),
+					"agent_explore_cook_period": lambda x: x.get("agent_explore_cook_period", 0.1),
+					"agent_explore_cook_prob": lambda x: x.get("agent_explore_cook_prob", 1.0),
+			
 		"""
+		
 		if config is None:
 			config = {}
 
