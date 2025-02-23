@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "birdie-rl"
-version = "0.1.1"
+version = "0.1.2"
 description = "An automated reward modeling and text-processing pipeline for multi-objective training of language models."
 authors = [
     { name = "Sam Blouir", email = "samblouir@gmail.com" },

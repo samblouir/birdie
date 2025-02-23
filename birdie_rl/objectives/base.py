@@ -31,10 +31,8 @@ class BaseObjectiveConfig:
 	objective: str = ""
 	rng_seed: int = 42
 	# minimum_sequence_length: int = -1
-	minimum_sequence_length: int = 64
-	minimum_remaining_space: int = 64
-	# minimum_sequence_length: int = int(1024 * (256/16384))
-	# minimum_remaining_space: int = int(1024 * (256/16384))
+	minimum_sequence_length: int = 32
+	minimum_remaining_space: int = 32
 	maximum_sequence_length: int = -1
 	maximum_remaining_space: int = -1
 	remaining_space: int = -1

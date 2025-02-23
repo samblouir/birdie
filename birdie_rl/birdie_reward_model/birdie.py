@@ -603,7 +603,7 @@ if __name__ == "__main__":
 
 	def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 		# This dummy fn returns the same list of sstring for any worker or split.
-		return [str(np.arange(x+1)) for x in range(64, 512)]
+		return [str(np.arange(x+1)) for x in range(512, 1024)]
 	
 	def text_grabber_fn(x):
 		return x
@@ -617,6 +617,7 @@ if __name__ == "__main__":
 		"steps_between_evaluations": 500,
 		"batch_size": 8,
 		"max_sequence_length": 2048,
+		# "minimum_sample_length": 256,
 		"accelerator": accelerator,
 		"validation_objectives": objectives_config,
 		"ds": data_generator_fn,

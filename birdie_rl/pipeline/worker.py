@@ -70,12 +70,12 @@ class Worker:
 		self.split = split
 
 		if text_grabber_fn is None:
-			# Default text grabber expects the record to have a "text" key.
+			# Default text grabber expects a dataset entry dict with a "text" key to be tokenized.
 			def text_grabber_fn(x):
 				try:
 					return x["text"]
 				except Exception as e:
-					print(f"  FAILED:  Could not grab the key 'text' from the record: {x}")
+					print(f"  FAILED:  Could not grab the key 'text' from the dataset entry dict: {x}")
 
 		self.text_grabber_fn = text_grabber_fn
 
@@ -111,14 +111,14 @@ class Worker:
 
 	def print(self, *args, **kwargs):
 		"""
-		Helper method to print with worker info.
+		This method helps us easily specifically silence worker debug info.
 		"""
 		# print(*args, **kwargs) ## Uncomment this to enable worker debug printing
 		pass
 
 	def close(self):
 		"""
-		Flush leftover partial batch (if any) and then exit the process.
+		Flushes leftover partial batches (if any), and then exits the process.
 		"""
 		pass
 		self.print(f"[Worker {self.worker_id} (split: {self.split})] close() called => Attempting to flush partial batch if any.")
