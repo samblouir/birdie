@@ -10,8 +10,8 @@ Birdie RL is an open-source framework designed to automate **multi-objective** t
 
 With dynamically mixes of training tasks -- including selective copying, next token prediction, autoencoding, infilling, copying, and prefix-LM -- Birdie automatically attempts to optimize model learning according to a **reward model** that tracks per-objective loss improvements, conditioned on the entire history.
 
-This codebase is designed to be hackable, allowing for new reward functions.
-Currently, only causal-only or prefix-LM **state space models** and Transformers decoder-only models are best supported.
+This codebase is designed to be hackable, allowing for swappable reward functions and objectives.
+Currently, decoder-only and causal or prefix-LM **state space models** and **Transformers** are supported.
 Birdie also features **sequence packing** for efficient batching.
 
 ### Installation
@@ -62,34 +62,34 @@ def huggingface_data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 ```python
 
 
-	def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
-		"""
-		The data_generator function will be called by each dataloading worker.
-		This currently only data parallel training, where each accelerator has its own copy of the model.
+def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
+    """
+    The data_generator function will be called by each dataloading worker.
+    This currently only data parallel training, where each accelerator has its own copy of the model.
 
-		This function should return a generator for a given
-		- split (e.g., "train", "validation", "test")
-		- shards it by worker_id and num_workers
-		- shuffles the data using rng_seed
-		"""
+    This function should return a generator for a given
+    - split (e.g., "train", "validation", "test")
+    - shards it by worker_id and num_workers
+    - shuffles the data using rng_seed
+    """
 
     ds = dataloader.prepare_dataset_as_list()
 
-		# Load the TinyStories dataset from Hugging Face
-		if split == "train":
+    # Load the TinyStories dataset from Hugging Face
+    if split == "train":
       ds = ds["train"]
-		elif split == "validation":
-			ds = ds['validation']
+    elif split == "validation":
+      ds = ds['validation']
 
-		# Shard the dataset among multiple workers
-		ds = ds[worker_id::num_workers]
+    # Shard the dataset among multiple workers
+    ds = ds[worker_id::num_workers]
 
-		# Shuffle the dataset for randomness
-		seeded_np_rng = np.random.default_rng(rng_seed)
-		seeded_np_rng.shuffle(ds)
+    # Shuffle the dataset for randomness
+    seeded_np_rng = np.random.default_rng(rng_seed)
+    seeded_np_rng.shuffle(ds)
 
-		# Return the prepared dataset
-		return ds
+    # Return the prepared dataset
+    return ds
 
   '''
    If each element of ds_train looks like this:
