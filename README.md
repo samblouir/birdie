@@ -16,17 +16,48 @@ Birdie also features **sequence packing** for efficient batching.
 
 ### Installation
    ```bash
+   # For a standard installation
    pip install git+https://github.com/samblouir/birdie.git
+
+   # To upgrade to the latest version
+   pip install git+https://github.com/samblouir/birdie.git --upgrade --no-deps
+
+   # To re-install and get the latest version
+   pip install git+https://github.com/samblouir/birdie.git --force-reinstall --no-deps
    ```
 ## Usage
 
-Below is a quick start for integrating Birdie RL in your training loop:
+Below is a quick start for integrating Birdie RL in your training loop. The data_generator_fn is important. It should be able to return an iterable object for a given split, sharded by worker_id and num_workers, and shuffled using rng_seed.
 
 ```python
 from birdie_rl import Birdie
 from birdie_rl.example_usage.ul2_config import ul2_config
 import tiktoken
 import accelerate
+
+def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
+	"""
+	The data_generator function will be called by each dataloading worker.
+	This currently only data parallel training, where each accelerator has its own copy of the model.
+
+	This function should return a generator for a given
+	  - split (e.g., "train", "validation", "test")
+	  - shards it by worker_id and num_workers
+	  - shuffles the data using rng_seed
+	"""
+
+	# Load the TinyStories dataset from Hugging Face
+	ds = load_dataset("roneneldan/TinyStories", split=split)
+
+	# Shard the dataset among multiple workers
+	ds = ds.shard(num_shards=num_workers, index=worker_id)
+
+	# Shuffle the dataset for randomness
+	ds = ds.shuffle(rng_seed)
+
+	# Return the prepared dataset
+	return ds
+
 
 # Configuration
 config = {
@@ -38,7 +69,7 @@ config = {
     "accelerator": accelerate.Accelerator(),
     "tokenizer": tiktoken.get_encoding("o200k_base"),
     "objectives": ul2_config,
-    "ds": your_data_generator_function,  # Provide your dataset or generator
+    "ds": data_generator_fn,  # Provide your dataset or generator
     "reward_fn": your_reward_function,   # Define your custom reward logic
 }
 
