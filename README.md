@@ -61,8 +61,6 @@ def huggingface_data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 ### Data generator function from a list:
 ```python
 
-	ds_train = ds["train"].tolist()
-	ds_validation = ds["validation"].tolist()
 
 	def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 		"""
@@ -75,11 +73,13 @@ def huggingface_data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 		- shuffles the data using rng_seed
 		"""
 
+    ds = dataloader.prepare_dataset_as_list()
+
 		# Load the TinyStories dataset from Hugging Face
 		if split == "train":
-			ds = ds_train
+      ds = ds["train"]
 		elif split == "validation":
-			ds = ds_validation
+			ds = ds['validation']
 
 		# Shard the dataset among multiple workers
 		ds = ds[worker_id::num_workers]
