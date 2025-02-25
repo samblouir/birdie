@@ -60,29 +60,41 @@ import accelerate
 config = {
     # This is the batch size that Birdie will use.
     "batch_size": 8,
+
     # This is the sequence length shape that Birdie will pack your inputs into.
     # Padding tokens (0's) will be added to the rightside.                          
     "sequence_length": 2048,
+
     # This controls the number of training dataset dataloader workers (per process)
     # If you have added more intense objectives or are being bottlenecked by the dataloader, feel free to increase this number.
     "num_workers": 8,                                 
+
     # Birdie will calculate new objective sampling ratios every `steps_between_evaluations` steps
-    "steps_between_evaluations": 1024,                
+    "steps_between_evaluations": 1024,       
+
     # This is used by the reward model - there are more parameters that can be set
     #  the default is to - with cosine decay -  explore ratios during the first half of training and exploit during the second half.
-    "num_steps": 32_768,                              
+    "num_steps": 32_768,        
+
     # Accelerate is currently required in this version of the code.
-    "accelerator": accelerate.Accelerator(),          
+    "accelerator": accelerate.Accelerator(),     
+
     # Any tokenizer will work that uses .encode() and .decode()
     "tokenizer": tiktoken.get_encoding("o200k_base"), 
+
     # This uses the objectives from UL2, and lets Birdie adjust them during training. Pass in no objectives to use the default (Birdie) objectives.
-    "objectives": ul2_config,                         
+    "objectives": ul2_config,                       
+
     # Provide your dataset fn here (See below)
-    "ds": data_generator_fn,                          
+    "ds": data_generator_fn,                   
+
     # If desired, define a new custom reward function, if you like. Please see example_usage/utils.py's reward_fn() for an example.
-    "reward_fn": your_reward_function,              
+    "reward_fn": your_reward_function,        
+
     # Define how to extract text from your dataset in whichever way you want. (See below)
-    "text_grabber_fn": text_grabber_fn,               
+    "text_grabber_fn": text_grabber_fn,    
+
+    ## Additional configuration settings are documented in birdie_rl/birdie_reward_model/birdie.py Birdie.__init__().           
 }
 
 # Initialize Birdie
