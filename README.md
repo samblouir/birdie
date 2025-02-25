@@ -2,8 +2,6 @@
 
 **Birdie** was published at **EMNLP 2024**!
 
-[The latest version of the paper is here available here.](https://github.com/samblouir/birdie/blob/main/Birdie__Advancing_State_Space_Models_with_Reward_Driven_Objectives_and_Curricula.pdf)
-
 Please check out our paper on arXiv: [arXiv:2411.01030](https://arxiv.org/abs/2411.01030).
 
 Birdie RL is an open-source framework designed to automate **multi-objective** training using a **reward-driven** curriculum.
@@ -25,13 +23,72 @@ Birdie also features **sequence packing** for efficient batching.
    # To re-install and get the latest version
    pip install git+https://github.com/samblouir/birdie.git --force-reinstall --no-deps
    ```
+
+---
+
+<div align="center">
+  <a href="https://github.com/samblouir/birdie/blob/main/birdie_emnlp_2024_poster.jpg?raw=true"><img src="https://github.com/samblouir/birdie/blob/main/birdie_emnlp_2024_poster.jpg?raw=true" alt="Birdie EMNLP 2024 Poster" width="800" /></a>
+</div>
+
+---
+
 ## Usage
 
-Below is a quick start for integrating Birdie RL in your training loop. The data_generator_fn is important. It should be able to return an iterable object for a given split, sharded by worker_id and num_workers, and shuffled using rng_seed.
+Below is a quick start for integrating Birdie RL in your training loop.
+There are two primary components needed to use Birdie: adding a few lines to your training loop, and preparing dataloader and grabber functions.
 
-### Data generator function using HuggingFace's datasets:
+### Adding Birdie into your training loop
+
 ```python
+from birdie_rl import Birdie
+from birdie_rl.example_usage.ul2_config import ul2_config
+import tiktoken
+import accelerate
 
+# Configuration
+config = {
+    "batch_size": 8,                                  # This is the batch size that Birdie will use.
+    "sequence_length": 2048,                          # This is the sequence length shape that Birdie will pack your inputs into. Padding tokens (0's) will be added to the rightside.
+    "num_workers": 8,                                 # This controls the number of training dataset dataloader workers (per process). If you have added more intense objectives or are being bottlenecked by the dataloader, feel free to increase this number.
+    "steps_between_evaluations": 1024,                # Birdie will calculate new objective sampling ratios every `steps_between_evaluations` steps
+    "num_steps": 32_768,                              # This is used by the reward model - there are more parameters that can be set, but the default is to - with cosine decay -  explore ratios during the first half of training and exploit during the second half.
+    "accelerator": accelerate.Accelerator(),          # Accelerate is currently required in this version of the code.
+    "tokenizer": tiktoken.get_encoding("o200k_base"), # Any tokenizer will work that uses .encode() and .decode()
+    "objectives": ul2_config,                         # This uses the objectives from UL2, and lets Birdie adjust them during training. Pass in no objectives to use the default (Birdie) objectives.
+    "ds": data_generator_fn,                          # Provide your dataset fn here (See below)
+    # "reward_fn": your_reward_function,              # Define your custom reward function, if you like. Please see example_usage/utils.py's reward_fn() for an example.
+    "text_grabber_fn": text_grabber_fn,               # Define how to extract text from your dataset in whichever way you want. (See below)
+}
+
+# Initialize Birdie
+birdie = Birdie(config)
+
+# Training Loop
+for step in range(config["num_steps"]):
+
+    # Periodic evaluatio (defined by in the config "steps_between_evaluations")
+    if birdie.time_for_eval(step):
+        model.eval()
+        for (objective_name, batch) in birdie.measure_validation_losses():
+            loss = model(**batch)
+            birdie.log_validation_loss(key=objective_name, loss=loss, step_idx=step)
+         model.train()
+
+    # Fetch the next training batch from Birdie. It is of a fixed-shape, defined by (batch, sequence_length) in the config..
+    batch = birdie.get_next_training_sample()
+    loss = model(**batch)
+    [...]
+```
+
+### Preparing your dataloader functions
+
+The data_generator_fn is critical!
+It should return an iterable object for a given split, worker_id, num_workers, and rng_seed.
+This will allow your code to work across anywhere from one to multiple machines.
+You can also do whatever you like in data_generator_fn, including loading entirely different datasets than what you are training on.
+
+#### Data generator function using HuggingFace's datasets:
+```python
 def huggingface_data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 	"""
 	The data_generator function will be called by each dataloading worker.
@@ -54,14 +111,10 @@ def huggingface_data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 
 	# Return the prepared dataset
 	return ds
-
-
 ```
 
-### Data generator function from a list:
+#### Data generator function from a list:
 ```python
-
-
 def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
     """
     The data_generator function will be called by each dataloading worker.
@@ -92,7 +145,7 @@ def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
     return ds
   ```
 
-### Important: Element grabber function
+#### Important: Element grabber function
    If each element of ds_train looks like this:
    ```python
    {
@@ -103,7 +156,7 @@ def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
    }
    ```
   
-   Then we can make a text_grabber_fn like this to tell the dataloader how to extract the text from each element:
+   Then we can make a text_grabber_fn like this to tell the dataloader how to extract the text from each element.
   ```  
   def text_grabber_fn(x):
     return x["entry"]["text"]
@@ -112,63 +165,24 @@ def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
    Then, pass it to the Birdie in the upcoming "Training code" codeblock.
 
 
-```
 
-### Training code:
-```python
-from birdie_rl import Birdie
-from birdie_rl.example_usage.ul2_config import ul2_config
-import tiktoken
-import accelerate
-
-# Configuration
-config = {
-    "batch_size": 8,
-    "sequence_length": 2048,
-    "num_workers": 16,
-    "steps_between_evaluations": 32,
-    "num_steps": 4096,
-    "accelerator": accelerate.Accelerator(),
-    "tokenizer": tiktoken.get_encoding("o200k_base"),
-    "objectives": ul2_config,
-    "ds": data_generator_fn,  # Provide your dataset fn
-    "reward_fn": your_reward_function,   # Define your custom reward logic
-    "text_grabber_fn": text_grabber_fn,  # Define how to extract text from your dataset in whichever way you want
-}
-
-# Initialize Birdie
-birdie = Birdie(config)
-
-# Training Loop
-for step in range(config["num_steps"]):
-    # Periodic evaluation
-    if birdie.time_for_eval(step):
-        model.eval()
-        for (objective_name, batch) in birdie.measure_validation_losses():
-            loss = model(**batch)  # Inference call
-            birdie.log_validation_loss(key=objective_name, loss=loss, step_idx=step)
-         model.train()
-
-    # Fetch the next training sample from Birdie
-    sample = birdie.get_next_training_sample()
-    loss = model(**sample)
-    ...
-
-```
 
 You can find more detailed examples in:
+- **`birdie_dna`** *COMING SOON* for a complete working example with a unique dataset, tokenizer, and other domain specific pre-training objective tweaks.
 - **`example_usage/example.py`** for a minimal script
 - **`example_usage/ul2_config.py`** for UL2-style objectives
 - **`example_usage/utils.py`** for custom reward functions and data generator demos
 
+## Additional important usage notes:
+
+Birdie's code assumes your model accepts the following keyword arguments:
+- `input_ids` (torch.Long): The input token IDs in a shape of (batch_size, sequence_length)
+- `label_ids` (torch.Long): The target token IDs in a shape of (batch_size, sequence_length). This is used for calculating the loss.
+- `attention_mask` (torch.Long): The attention mask in a shape of (batch_size, sequence_length). Indices with 1 are areas allowed to have bidirectional Attention. Indices with 0 should be modeled causally.
+- `segment_ids` (torch.Long): The segment IDs in a shape of (batch_size, sequence_length). This is used for models that support segment embeddings.
+
 ---
 
-
-<div align="center">
-  <a href="https://github.com/samblouir/birdie/blob/main/birdie_emnlp_2024_poster.jpg?raw=true"><img src="https://github.com/samblouir/birdie/blob/main/birdie_emnlp_2024_poster.jpg?raw=true" alt="Birdie EMNLP 2024 Poster" width="800" /></a>
-</div>
-
----
 
 ## Features & Highlights
 
