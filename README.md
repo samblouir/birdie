@@ -42,7 +42,7 @@ There are two primary components needed to use Birdie: adding a few lines to you
 
 You can find usage examples in:
 - **`birdie_dna`** *COMING SOON* for a complete working example with a domain specific pre-training objective configuration, unique dataset, and tokenizer.
-- **`example_usage/base_model.py`** for bidirectional, prefix-LM Transformer that use's Birdie's objectives.
+- **`example_usage/base_model.py`** for a bidirectional, prefix-LM Transformer that can fully use Birdie's objectives.
 - **`example_usage/example.py`** for a minimal working example with a dummy model.
 - **`example_usage/ul2_config.py`** to see how to define objectives (Using UL2's objectives).
 - **`example_usage/utils.py`** to see how to structure a custom reward function, as well as a data generator.
