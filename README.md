@@ -12,7 +12,7 @@ This codebase is designed to be hackable, allowing for swappable reward function
 Currently, decoder-only and causal or prefix-LM **state space models** and **Transformers** are supported.
 Birdie also features **sequence packing** for efficient batching.
 
-For full performance benefits, **it is strongly recommended to use a prefix-LM SSM or Transformer with Birdie.**
+For full performance benefits, **it is strongly recommended to use a prefix-LM SSM or Transformer with Birdie.** Please see "example_usage/base_model.py" for an example of a prefix-LM Transformer in PyTorch.
 Birdie benefitted both causal and bidirectional models on multi-Phone number retrieval, but most strongly improved SQuAD v2 performance when coupled with a prefix-LM model.
 
 ### Installation
