@@ -35,7 +35,7 @@ Birdie benefitted both causal and bidirectional models on multi-Phone number ret
 
 ---
 
-## Usage
+# Usage
 
 Below is a quick start for integrating Birdie RL in your training loop.
 There are two primary components needed to use Birdie: adding a few lines to your training loop, and preparing dataloader and grabber functions.
@@ -48,7 +48,10 @@ You can find usage examples in:
 - **`example_usage/utils.py`** to see how to structure a custom reward function, as well as a data generator.
 function.
 
-### Adding Birdie into your training loop
+## 1) Create an instance of Birdie
+
+Define a config and create an instance of Birdie.
+*Additional configuration settings are documented in birdie_rl/birdie_reward_model/birdie.py Birdie.__init__().*
 
 ```python
 from birdie_rl import Birdie
@@ -57,6 +60,8 @@ import tiktoken
 import accelerate
 
 # Configuration
+
+
 config = {
     # This is the batch size that Birdie will use.
     "batch_size": 8,
@@ -85,21 +90,23 @@ config = {
     # This uses the objectives from UL2, and lets Birdie adjust them during training. Pass in no objectives to use the default (Birdie) objectives.
     "objectives": ul2_config,                       
 
-    # Provide your dataset fn here (See below)
-    "ds": data_generator_fn,                   
-
     # If desired, define a new custom reward function, if you like. Please see example_usage/utils.py's reward_fn() for an example.
     "reward_fn": your_reward_function,        
 
-    # Define how to extract text from your dataset in whichever way you want. (See below)
+    # Provide your dataset fn here (See section 3 below)
+    "ds": data_generator_fn,                   
+
+    # Define how to extract text from your dataset in whichever way you want. (See section 3 belowbelow)
     "text_grabber_fn": text_grabber_fn,    
 
-    ## Additional configuration settings are documented in birdie_rl/birdie_reward_model/birdie.py Birdie.__init__().           
 }
 
 # Initialize Birdie
 birdie = Birdie(config)
+```
 
+## 2) Add Birdie to your training loop
+```
 # Training Loop
 for step_idx in range(config["num_steps"]):
 
@@ -114,10 +121,14 @@ for step_idx in range(config["num_steps"]):
     # Fetch the next training batch from Birdie. It is of a fixed-shape, defined by (batch, sequence_length) in the config..
     batch = birdie.get_next_training_sample()
     loss = model(**batch)
-    [...]
+    optimizer.zero_grad()
+
+    accelerator.backward(loss)
+    optimizer.step()
+    scheduler.step()
 ```
 
-### Preparing your dataloader functions
+## 3) Preparing your dataloader functions
 
 The data_generator_fn and text_grabber_fn's are critical!
 
@@ -125,7 +136,7 @@ It should return an iterable object for a given split, worker_id, num_workers, a
 This will allow your code to work across anywhere from one to multiple machines.
 You can also do whatever you like in data_generator_fn, including loading entirely different datasets than what you are training on.
 
-#### Data generator function using HuggingFace's datasets:
+### 4) Data generator function using HuggingFace's datasets:
 ```python
 def huggingface_data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 	"""
