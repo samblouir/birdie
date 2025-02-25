@@ -2,3 +2,4 @@ __pycache__/
 .git/*
 *.pyc
 push.sh
+birdie_rl/birdie_reward_model/example_usage/compress.py

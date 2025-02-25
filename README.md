@@ -6,11 +6,14 @@ Please check out our paper on arXiv: [arXiv:2411.01030](https://arxiv.org/abs/24
 
 Birdie RL is an open-source framework designed to automate **multi-objective** training using a **reward-driven** curriculum.
 
-With dynamically mixes of training tasks -- including selective copying, next token prediction, autoencoding, infilling, copying, and prefix-LM -- Birdie automatically attempts to optimize model learning according to a **reward model** that tracks per-objective loss improvements, conditioned on the entire history.
+Using dynamic mixtures of training tasks -- including selective copying, next token prediction, autoencoding, infilling, copying, and prefix-LM -- Birdie automatically attempts to optimize model learning according to a **reward model** that tracks per-objective loss improvements, conditioned on the entire history.
 
 This codebase is designed to be hackable, allowing for swappable reward functions and objectives.
 Currently, decoder-only and causal or prefix-LM **state space models** and **Transformers** are supported.
 Birdie also features **sequence packing** for efficient batching.
+
+For full performance benefits, **it is strongly recommended to use a prefix-LM SSM or Transformer with Birdie.**
+Birdie benefitted both causal and bidirectional models on multi-Phone number retrieval, but most strongly improved SQuAD v2 performance when coupled with a prefix-LM model.
 
 ### Installation
    ```bash
@@ -37,6 +40,14 @@ Birdie also features **sequence packing** for efficient batching.
 Below is a quick start for integrating Birdie RL in your training loop.
 There are two primary components needed to use Birdie: adding a few lines to your training loop, and preparing dataloader and grabber functions.
 
+You can find usage examples in:
+- **`birdie_dna`** *COMING SOON* for a complete working example with a domain specific pre-training objective configuration, unique dataset, and tokenizer.
+- **`example_usage/base_model.py`** for bidirectional, prefix-LM Transformer that use's Birdie's objectives.
+- **`example_usage/example.py`** for a minimal working example with a dummy model.
+- **`example_usage/ul2_config.py`** to see how to define objectives (Using UL2's objectives).
+- **`example_usage/utils.py`** to see how to structure a custom reward function, as well as a data generator.
+function.
+
 ### Adding Birdie into your training loop
 
 ```python
@@ -47,31 +58,45 @@ import accelerate
 
 # Configuration
 config = {
-    "batch_size": 8,                                  # This is the batch size that Birdie will use.
-    "sequence_length": 2048,                          # This is the sequence length shape that Birdie will pack your inputs into. Padding tokens (0's) will be added to the rightside.
-    "num_workers": 8,                                 # This controls the number of training dataset dataloader workers (per process). If you have added more intense objectives or are being bottlenecked by the dataloader, feel free to increase this number.
-    "steps_between_evaluations": 1024,                # Birdie will calculate new objective sampling ratios every `steps_between_evaluations` steps
-    "num_steps": 32_768,                              # This is used by the reward model - there are more parameters that can be set, but the default is to - with cosine decay -  explore ratios during the first half of training and exploit during the second half.
-    "accelerator": accelerate.Accelerator(),          # Accelerate is currently required in this version of the code.
-    "tokenizer": tiktoken.get_encoding("o200k_base"), # Any tokenizer will work that uses .encode() and .decode()
-    "objectives": ul2_config,                         # This uses the objectives from UL2, and lets Birdie adjust them during training. Pass in no objectives to use the default (Birdie) objectives.
-    "ds": data_generator_fn,                          # Provide your dataset fn here (See below)
-    # "reward_fn": your_reward_function,              # Define your custom reward function, if you like. Please see example_usage/utils.py's reward_fn() for an example.
-    "text_grabber_fn": text_grabber_fn,               # Define how to extract text from your dataset in whichever way you want. (See below)
+    # This is the batch size that Birdie will use.
+    "batch_size": 8,
+    # This is the sequence length shape that Birdie will pack your inputs into.
+    # Padding tokens (0's) will be added to the rightside.                          
+    "sequence_length": 2048,
+    # This controls the number of training dataset dataloader workers (per process)
+    # If you have added more intense objectives or are being bottlenecked by the dataloader, feel free to increase this number.
+    "num_workers": 8,                                 
+    # Birdie will calculate new objective sampling ratios every `steps_between_evaluations` steps
+    "steps_between_evaluations": 1024,                
+    # This is used by the reward model - there are more parameters that can be set
+    #  the default is to - with cosine decay -  explore ratios during the first half of training and exploit during the second half.
+    "num_steps": 32_768,                              
+    # Accelerate is currently required in this version of the code.
+    "accelerator": accelerate.Accelerator(),          
+    # Any tokenizer will work that uses .encode() and .decode()
+    "tokenizer": tiktoken.get_encoding("o200k_base"), 
+    # This uses the objectives from UL2, and lets Birdie adjust them during training. Pass in no objectives to use the default (Birdie) objectives.
+    "objectives": ul2_config,                         
+    # Provide your dataset fn here (See below)
+    "ds": data_generator_fn,                          
+    # If desired, define a new custom reward function, if you like. Please see example_usage/utils.py's reward_fn() for an example.
+    "reward_fn": your_reward_function,              
+    # Define how to extract text from your dataset in whichever way you want. (See below)
+    "text_grabber_fn": text_grabber_fn,               
 }
 
 # Initialize Birdie
 birdie = Birdie(config)
 
 # Training Loop
-for step in range(config["num_steps"]):
+for step_idx in range(config["num_steps"]):
 
-    # Periodic evaluatio (defined by in the config "steps_between_evaluations")
-    if birdie.time_for_eval(step):
+    # Periodic evaluations (set in the config: "steps_between_evaluations")
+    if birdie.time_for_eval(step_idx):
         model.eval()
         for (objective_name, batch) in birdie.measure_validation_losses():
             loss = model(**batch)
-            birdie.log_validation_loss(key=objective_name, loss=loss, step_idx=step)
+            birdie.log_validation_loss(key=objective_name, loss=loss, step_idx=step_idx)
          model.train()
 
     # Fetch the next training batch from Birdie. It is of a fixed-shape, defined by (batch, sequence_length) in the config..
@@ -82,7 +107,8 @@ for step in range(config["num_steps"]):
 
 ### Preparing your dataloader functions
 
-The data_generator_fn is critical!
+The data_generator_fn and text_grabber_fn's are critical!
+
 It should return an iterable object for a given split, worker_id, num_workers, and rng_seed.
 This will allow your code to work across anywhere from one to multiple machines.
 You can also do whatever you like in data_generator_fn, including loading entirely different datasets than what you are training on.
@@ -167,11 +193,7 @@ def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 
 
 
-You can find more detailed examples in:
-- **`birdie_dna`** *COMING SOON* for a complete working example with a unique dataset, tokenizer, and other domain specific pre-training objective tweaks.
-- **`example_usage/example.py`** for a minimal script
-- **`example_usage/ul2_config.py`** for UL2-style objectives
-- **`example_usage/utils.py`** for custom reward functions and data generator demos
+
 
 ## Additional important usage notes:
 
@@ -190,13 +212,13 @@ Birdie's code assumes your model accepts the following keyword arguments:
   This all-in-one pipeline easily adds an automated curriculum with multi-objective training, including **autoencoding**, **deshuffling**, **infilling**, **copying**, etc. all with customizable parameters.
 
 - **Character-level noising functions**
-   By default, Birdie's noise functions work on the character-level for text. Long inputs are automatically sliced into suitable chunks to fit into your desired maximum sequence length.
+   By default, Birdie's deshuffling function works at the character-level for text.
 
 - **Reward-Driven Curriculum**  
   Birdie uses a Transformer reward model to adaptively select objectives, optimizing training based on sub-loss improvements, historical objective mixture rates, and any other factors.
 
 - **Efficient Data Pipeline**  
-  Integrates multi-worker processing and **sequence packing** to reduce wasted compute, boosting effective tokens per second throughput during training.
+  Integrates multi-worker processing and **sequence packing** to reduce wasted compute, boosting effective tokens per second throughput during training. Long inputs are automatically sliced into chunks to fit into your desired maximum sequence length across batches.
 
 - **Huggingface Accelerate Support**
    Birdie is compatible with Huggingface's Accelerate library, allowing for easy scaling to multiple GPUs or TPUs. Birdie currently supports model parallel setups for the dataloader. JAX compatibility to be added soon.
@@ -205,19 +227,21 @@ Birdie's code assumes your model accepts the following keyword arguments:
   Birdie is designed to be hackable. Easily add new objectives, custom reward functions, and other pipeline components to experiment with different strategies.
 
 - **Paper**  
-   Birdie was published at EMNLP 2024, where it brought SSMs and Transformer models to state-of-the-art performance on several tasks, compared to standard next token prediction training.
+   Birdie was published at EMNLP 2024, where it we saw strong benefits versus standard next token prediction training on several NLP comprehension and retrieval tasks.
 
 
 ---
 
 ## Installation
 
-### Simplest approach
+### Simplest install approach
+
+First, install birdie.
    ```bash
    pip install git+https://github.com/samblouir/birdie.git
    ```
 
-   Please see "example_usage/example.py" for an example of how to use Birdie with your Torch (or, with minimal modifications, JAX) training loop.
+Then see "example_usage/example.py" for an example of how to use Birdie with your Torch (or, with minimal modifications, JAX) training loop.
 
 ## Dataloader Debugging
 
