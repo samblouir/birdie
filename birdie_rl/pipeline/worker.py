@@ -56,6 +56,7 @@ class Worker:
 		split: str = None,
 		text_grabber_fn: Callable[[Any], str] = None,
 		infinite_loop: bool = True,
+		start_generating_paradigm: str = "\n<|assistant|>\n",
 	):
 		self.worker_id = worker_id
 		self.total_workers = total_workers
@@ -96,9 +97,11 @@ class Worker:
 
 		# Create the Batcher from packer_batcher.py
 		self.batcher = Batcher(config={
+			"tokenizer": self.tokenizer,
 			"batch_size": self.batch_size,
 			"minimum_sequence_length": self.min_seq_len_for_packing,
 			"sequence_length": self.sequence_length,
+			"start_generating_paradigm": start_generating_paradigm,
 		})
 
 		self.leftover_text = ""

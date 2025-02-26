@@ -119,17 +119,17 @@ def make_cosine_decay_schedule(
 			f"single_decaying_cosine_value(total_steps): {final_val}, min_val: {min_val}"
 		)
 	except Exception as e:
-		debug_msgs = [
-			f"make_cosine_decay_schedule()",
-			f"total_steps: {total_steps}",
-			f"min_val: {min_val}",
-			f"max_val: {max_val}",
-			f"warmup_steps: {warmup_steps}",
-			f"decay_factor: {decay_factor}",
-			f"init_val: {init_val}",
-			f"end_val: {end_val}",
-			f"Exception: {e}",
-		]
+		# debug_msgs = [
+		# 	f"make_cosine_decay_schedule()",
+		# 	f"total_steps: {total_steps}",
+		# 	f"min_val: {min_val}",
+		# 	f"max_val: {max_val}",
+		# 	f"warmup_steps: {warmup_steps}",
+		# 	f"decay_factor: {decay_factor}",
+		# 	f"init_val: {init_val}",
+		# 	f"end_val: {end_val}",
+		# 	f"Exception: {e}",
+		# ]
 		# Print the debug messages if desired (commented out to remove extraneous prints)
 		# print('\n'.join(debug_msgs))
 		raise e

@@ -57,8 +57,8 @@ class RewardModel(nn.Module):
         assert self.reward_signal_dims > 0, "Reward signal dimensions must be positive."
 
         # Log the configuration for debugging or monitoring
-        for key, value in sorted(config.items()):
-            config['accelerator'].print(f"  RewardModel config [{key}]: {value}")
+        # for key, value in sorted(config.items()):
+        #     config['accelerator'].print(f"  RewardModel config [{key}]: {value}")
 
         # Define exploration class labels for objectives
         # This array assigns a unique label to each objective for exploration purposes.

@@ -266,6 +266,7 @@ def pipeline_data_generator(
 			split=split,
 			tokenizer=config['tokenizer'],
 			text_grabber_fn=config.get("text_grabber_fn", None),
+			start_generating_paradigm=config.get("start_generating_paradigm", "\n<|assistant|>\n"),
 		)
 		worker_thread = mp.Process(target=worker.run, )
 		worker_threads.append(worker_thread)

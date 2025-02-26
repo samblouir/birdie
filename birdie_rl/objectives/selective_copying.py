@@ -1,9 +1,5 @@
-# birdie_paradigm/objectives/SelectiveCopying_optimized.py
-
 """
-SelectiveCopying Objective (Optimized Version):
-
-Ensures identical output but speeds up critical sections.
+SelectiveCopying Objective:
 """
 
 import dataclasses

@@ -1,4 +1,3 @@
-# birdie_paradigm/objectives/infilling.py
 """
 Infilling Objective:
 -------------------

@@ -1,10 +1,5 @@
 """
-Deshuffling objective (simplified, no teacher-forcing).
-
-Changes:
-- Removed the old teacher-forcing truncation.
-- We do not do any partial usage if the result is too large; we skip instead.
-- This approach matches the "no post-hoc truncation, skip if it doesn't fit" style.
+Deshuffling objective
 """
 
 import dataclasses

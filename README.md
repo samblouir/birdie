@@ -122,7 +122,10 @@ config = {
     "ds": data_generator_fn,                   
 
     # Define how to extract text from your dataset in whichever way you want. (See section 3 belowbelow)
-    "text_grabber_fn": text_grabber_fn,    
+    "text_grabber_fn": text_grabber_fn,
+
+    # Adds a separator between the prefix and suffix regions.
+    "start_generating_paradigm": "\n<|assistant|>\n", # This is also the default
 
 }
 
