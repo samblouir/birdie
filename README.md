@@ -10,10 +10,10 @@ Using dynamic mixtures of training tasks -- including selective copying, next to
 
 This codebase is designed to be hackable, allowing for swappable reward functions and objectives.
 Currently, decoder-only and causal or prefix-LM **state space models** and **Transformers** are supported.
-Birdie also features **sequence packing** for efficient batching.
+Birdie also features **sequence packing** for efficient training.
 
 For full performance benefits, **it is strongly recommended to use a prefix-LM SSM or Transformer with Birdie.** Please see "example_usage/base_model.py" for an example of a prefix-LM Transformer in PyTorch.
-Birdie benefitted both causal and bidirectional models on multi-Phone number retrieval, but most strongly improved SQuAD v2 performance when coupled with a prefix-LM model.
+Birdie benefits both causal and bidirectional models on multi-Phone number retrieval, but most strongly improved SQuAD v2 performance when coupled with a bidirectional, prefix-LM model.
 
 ### Installation
    ```bash
@@ -48,7 +48,32 @@ You can find usage examples in:
 - **`example_usage/utils.py`** to see how to structure a custom reward function, as well as a data generator.
 function.
 
-## 1) Create an instance of Birdie
+## 1) Add Birdie to your training loop
+```
+# Training Loop
+for step_idx in range(config["num_steps"]):
+
+    # Periodic evaluations (set in the config: "steps_between_evaluations")
+    if birdie.time_for_eval(step_idx):
+        model.eval()
+        for (objective_name, batch) in birdie.measure_validation_losses():
+            loss = model(**batch)
+            birdie.log_validation_loss(key=objective_name, loss=loss, step_idx=step_idx)
+         model.train()
+
+    # Fetch the next training batch from Birdie. It is of a fixed-shape, defined by (batch, sequence_length) in the config..
+    batch = birdie.get_next_training_sample()
+    loss = model(**batch)
+    optimizer.zero_grad()
+
+    accelerator.backward(loss)
+    optimizer.step()
+    scheduler.step()
+```
+
+## 2) Configuration
+
+### Create an instance of Birdie
 
 Define a config and create an instance of Birdie.
 *Additional configuration settings are documented in birdie_rl/birdie_reward_model/birdie.py Birdie.__init__().*
@@ -105,30 +130,9 @@ config = {
 birdie = Birdie(config)
 ```
 
-## 2) Add Birdie to your training loop
-```
-# Training Loop
-for step_idx in range(config["num_steps"]):
 
-    # Periodic evaluations (set in the config: "steps_between_evaluations")
-    if birdie.time_for_eval(step_idx):
-        model.eval()
-        for (objective_name, batch) in birdie.measure_validation_losses():
-            loss = model(**batch)
-            birdie.log_validation_loss(key=objective_name, loss=loss, step_idx=step_idx)
-         model.train()
 
-    # Fetch the next training batch from Birdie. It is of a fixed-shape, defined by (batch, sequence_length) in the config..
-    batch = birdie.get_next_training_sample()
-    loss = model(**batch)
-    optimizer.zero_grad()
-
-    accelerator.backward(loss)
-    optimizer.step()
-    scheduler.step()
-```
-
-## 3) Preparing your dataloader functions
+### Preparing your dataloader functions
 
 The data_generator_fn and text_grabber_fn's are critical!
 
@@ -152,11 +156,11 @@ def huggingface_data_generator_fn(split, worker_id, num_workers, rng_seed=0):
 	# Load the TinyStories dataset from Hugging Face
 	ds = load_dataset("roneneldan/TinyStories", split=split)
 
-	# Shard the dataset among multiple workers
-	ds = ds.shard(num_shards=num_workers, index=worker_id)
-
 	# Shuffle the dataset for randomness
 	ds = ds.shuffle(rng_seed)
+
+	# Shard the dataset among multiple workers
+	ds = ds.shard(num_shards=num_workers, index=worker_id)
 
 	# Return the prepared dataset
 	return ds
@@ -183,16 +187,17 @@ def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
     elif split == "validation":
       ds = ds['validation']
 
-    # Shard the dataset among multiple workers
-    ds = ds[worker_id::num_workers]
-
     # Shuffle the dataset for randomness
     seeded_np_rng = np.random.default_rng(rng_seed)
     seeded_np_rng.shuffle(ds)
 
+    # Shard the dataset among multiple workers
+    ds = ds[worker_id::num_workers]
+
     # Return the prepared dataset
     return ds
   ```
+
 
 #### Important: Element grabber function
    If each element of ds_train looks like this:
@@ -211,7 +216,16 @@ def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
     return x["entry"]["text"]
   ```
 
-   Then, pass it to the Birdie in the upcoming "Training code" codeblock.
+  Then, we pass it into Birdie's config as "text_grabber_fn": text_grabber_fn
+
+  For the above HuggingFace example using TinyStories, we want to use this text_grabber_fn:
+
+  ```python
+     def text_grabber_fn(x):
+        return x["text"]
+  ```
+
+   
 
 
 
