@@ -290,12 +290,14 @@ class Worker:
 				single_sample_data = {key: value[0] for key, value in packed_data_batch.items() if hasattr(value, 'ndim') and value.ndim > 0 and hasattr(value, 'shape') and value.shape[0] == 1}
 				if single_sample_data.get("input_ids", np.array([])).any(): 
 					item_to_send = {"worker_id": self.worker_id, "packed_data": single_sample_data, "objective_name": objective_name}
-					try: 
-						self.sample_queue.put(item_to_send, timeout=0.1) 
-					except queue.Full: 
-						self._log_print(f"WARNING: sample_queue full for '{objective_name}'. Item might be dropped.", verbosity_level=1)
-					except Exception as e_put: 
-						self._log_print(f"ERROR putting to sample_queue: {e_put}", verbosity_level=0); self.should_stop = True 
+					while True:
+						try: 
+							self.sample_queue.put(item_to_send, timeout=0.1) 
+							break
+						# except queue.Full: 
+						# 	self._log_print(f"WARNING: sample_queue full for '{objective_name}'. Item might be dropped.", verbosity_level=1)
+						except Exception as e_put: 
+							self._log_print(f"ERROR putting to sample_queue: {e_put}", verbosity_level=0); self.should_stop = True 
 
 	def run(self, profile: bool = False):
 		# self._log_print(f"run() method STARTED.", verbosity_level=1) 

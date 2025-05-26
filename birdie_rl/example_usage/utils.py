@@ -9,14 +9,14 @@ import sys
 
 def reward_fn(
     action_taken=None,
-    old_loss=None,
-    new_loss=None,
+    old_loss_vector=None,
+    new_loss_vector=None,
     old_step_idx=None,
     new_step_idx=None,
 ):
-    delta_loss = new_loss - old_loss
-    rv = delta_loss / (old_loss + 1e-8)
-    n = (new_loss * old_loss).sqrt() * rv.pow(3) * torch.e
+    delta_loss = new_loss_vector - old_loss_vector
+    rv = delta_loss / (old_loss_vector + 1e-8)
+    n = (new_loss_vector * old_loss_vector).sqrt() * rv.pow(3) * torch.e
     reward = -100 * torch.tanh(n) * torch.e
     reward = torch.where(
         torch.isnan(reward),

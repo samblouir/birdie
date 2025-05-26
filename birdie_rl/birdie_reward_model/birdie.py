@@ -15,7 +15,12 @@ Usage example:
 	for step in range(total_steps):
 		if birdie.time_for_eval(step):
 			# measure sub-loss improvements
-			...
+			validation_batches = birdie.measure_validation_losses()
+			for objective_name, batch_content in validation_batches:
+				loss = model_forward_pass(batch_content) # Your model's forward pass
+				birdie.log_validation_loss(key=objective_name, loss=loss, step_idx=step)
+			birdie._maybe_update_reward_model(current_training_step=step) # Explicitly try to update agent
+			
 		sample = birdie.get_next_training_sample()
 		# pass sample to your model, do forward/backward
 		...
@@ -25,7 +30,7 @@ import time
 import os
 import threading # For datagen_thread
 import multiprocessing as mp # For batcher_stop_event
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set # Added Set
 import accelerate
 import numpy as np
 import torch
@@ -59,7 +64,8 @@ def add_hashes(x):
 	for i, obj in enumerate(x):
 		if "hash_str" not in obj:
 			obj["hash_str"] = objective_utils.sha_hash(obj)[:8]
-		obj['nickname'] = f"{obj['name']}_{obj['hash_str']}"
+		# Ensure nickname is consistently generated using name and hash
+		obj['nickname'] = f"{obj.get('name', f'obj_{i}')}_{obj['hash_str']}"
 	return x
 
 def normalize_objective_probs(x):
@@ -141,14 +147,17 @@ class Birdie:
 		
 		self.move_to_gpu_fn = config.get("move_to_gpu_fn", partial(default_move_to_gpu_fn, accelerator=self.accelerator))
 
+		# Training objectives
 		self.objectives = config.get("objectives", default_objectives_config)
-		self.objectives = add_hashes(self.objectives)
+		self.objectives = add_hashes(self.objectives) # Ensures nicknames are consistent
 		self.objectives = normalize_objective_probs(self.objectives)
 		self.reward_signal_dims = int(config.get("reward_signal_dims", len(self.objectives)))
 
-		self.validation_ds_per_objective: Dict[int, Dict[str, Any]] = {}
+
+		# Validation objectives and samples
+		self.validation_ds_per_objective: Dict[str, Dict[str, Any]] = {} # Key is now string (nickname/hash)
 		self.validation_objectives = config.get("validation_objectives", self.objectives) 
-		self.validation_objectives = add_hashes(self.validation_objectives)
+		self.validation_objectives = add_hashes(self.validation_objectives) # Ensures nicknames are consistent
 		self.validation_objectives = normalize_objective_probs(self.validation_objectives)
 		self.validation_sequence_length = int(config.get("validation_sequence_length", self.sequence_length))
 		self.num_validation_batches = config.get("num_validation_batches", 2) 
@@ -165,8 +174,8 @@ class Birdie:
 
 		reward_model_config = {
 			**config, 
-			"reward_signal_dims": self.reward_signal_dims,
-			"num_objectives": len(self.objectives),
+			"reward_signal_dims": self.reward_signal_dims, # Should match len(self.objectives) for agent input
+			"num_objectives": len(self.objectives), # Agent's action space dimension
 			"hidden_dims": config.get("hidden_dims", (256, 256, 256, 256)), 
 			"lr": config.get("lr", 5e-4), 
 			"device": self.accelerator.device if self.accelerator else torch.device("cpu"),
@@ -178,7 +187,7 @@ class Birdie:
 		pipeline_components = pipeline_data_generator(
 			batch_size=self.batch_size,
 			sequence_length=self.sequence_length,
-			objectives_config=self.objectives,
+			objectives_config=self.objectives, # Use training objectives for pipeline
 			num_workers=self.num_workers,
 			accelerator=self.accelerator,
 			move_to_gpu_fn=self.move_to_gpu_fn,
@@ -197,8 +206,9 @@ class Birdie:
 		self.old_loss_vector: Optional[np.ndarray] = None
 		self.validation_key_to_losses: Dict[str, List[float]] = {}
 		self.validation_num_fulfilled_keys = 0
+		self._fulfilled_keys_this_cycle: Set[str] = set() # Tracks keys fulfilled in current eval cycle
 		self.current_validation_losses: Optional[np.ndarray] = None
-		self.last_reward_step_idx = -1 # Ensure eval happens at step 0 if steps_between_evaluations allows
+		self.last_reward_step_idx = -1 
 
 	def _shutdown_pipeline_components(self, controller, datagen_thread, batcher_stop_event, datagen_thread_stop_event=None, pipeline_name="Training"):
 		"""Helper to shut down a set of pipeline components."""
@@ -217,7 +227,7 @@ class Birdie:
 		if controller and hasattr(controller, 'close'):
 			self.print_fn(f"[Birdie] Closing {pipeline_name} controller...")
 			try:
-				controller.close(timeout_join=5.0) # Reduced timeout for faster shutdown attempt
+				controller.close(timeout_join=5.0) 
 				self.print_fn(f"[Birdie] {pipeline_name} controller closed.")
 			except Exception as e: self.print_fn(f"[Birdie Warning] Error closing {pipeline_name} controller: {e}")
 		
@@ -239,7 +249,6 @@ class Birdie:
 			self.datagen_thread_stop_event,
 			pipeline_name="Training"
 		)
-		# Validation pipelines are now generated and cleaned up within get_validation_samples directly
 		self.print_fn("[Birdie] Main close sequence finished.")
 
 	def __del__(self):
@@ -267,7 +276,7 @@ class Birdie:
 			traceback.print_exc()
 			raise
 
-	def get_validation_samples(self) -> Dict[int, Dict[str, Any]]:
+	def get_validation_samples(self) -> Dict[str, Dict[str, Any]]: # Key is now string
 		if self._validation_samples_prepared:
 			return self.validation_ds_per_objective
 
@@ -278,9 +287,11 @@ class Birdie:
 		text_grabber = self.config.get("text_grabber_fn", lambda x: x.get("text", "") if isinstance(x, dict) else str(x))
 
 		for objective_idx, objective_config_from_list in enumerate(self.validation_objectives):
-			obj_name_for_log = objective_config_from_list.get('nickname', objective_config_from_list.get('name', f"val_obj_{objective_idx}"))
-			# self.print_fn(f"  Processing validation for: {obj_name_for_log}")
-
+			# Use nickname as the primary key for consistency
+			obj_key = objective_config_from_list.get('nickname', 
+						objective_config_from_list.get('hash_str', 
+						objective_config_from_list.get('name', f"val_obj_{objective_idx}")))
+			
 			current_samples_for_this_objective = []
 			
 			try:
@@ -290,37 +301,33 @@ class Birdie:
 					num_workers=1, 
 					rng_seed=self.config.get("seed", int(time.time())) + objective_idx + 1000 
 				)
-				# data_gen_kwargs_for_val.update(self.config.get("data_generator_fn_kwarg_overrides", {}))
 				
 				if not callable(self.ds_validation_callable):
-					self.print_fn(f"  ERROR: self.ds_validation_callable is not callable for {obj_name_for_log}. Skipping.")
-					self.measured_num_batches_per_objective[obj_name_for_log] = 0
-					self.validation_ds_per_objective[objective_idx] = {"objective": objective_config_from_list, "batches": []}
+					self.print_fn(f"  ERROR: self.ds_validation_callable is not callable for {obj_key}. Skipping.")
+					self.measured_num_batches_per_objective[obj_key] = 0
+					self.validation_ds_per_objective[obj_key] = {"objective": objective_config_from_list, "batches": []}
 					continue
 				
-				# Create a fresh iterator for each objective to ensure data isolation and correct sharding/reset
 				val_data_iter = iter(self.ds_validation_callable(**data_gen_kwargs_for_val))
 			except Exception as e:
-				self.print_fn(f"  ERROR creating data iterator for validation objective {obj_name_for_log}: {e}")
+				self.print_fn(f"  ERROR creating data iterator for validation objective {obj_key}: {e}")
 				traceback.print_exc()
-				self.measured_num_batches_per_objective[obj_name_for_log] = 0
-				self.validation_ds_per_objective[objective_idx] = {"objective": objective_config_from_list, "batches": []}
+				self.measured_num_batches_per_objective[obj_key] = 0
+				self.validation_ds_per_objective[obj_key] = {"objective": objective_config_from_list, "batches": []}
 				continue
 			
-			# Load the objective instance
-			# Make a deep copy of the objective config to avoid modifying the original list
 			current_obj_config_dict = objective_config_from_list.copy()
 			current_obj_config_dict["tokenizer"] = self.tokenizer
 			current_obj_config_dict["remaining_space"] = self.validation_sequence_length 
-			current_obj_config_dict["rng_seed"] = self.config.get("seed", int(time.time())) + objective_idx + 2000 # New seed for objective
+			current_obj_config_dict["rng_seed"] = self.config.get("seed", int(time.time())) + objective_idx + 2000 
 			
 			try:
 				objective_instance = load_objective(current_obj_config_dict["name"], current_obj_config_dict)
 			except Exception as e:
-				self.print_fn(f"  ERROR loading objective {obj_name_for_log} for validation: {e}")
+				self.print_fn(f"  ERROR loading objective {obj_key} for validation: {e}")
 				traceback.print_exc()
-				self.measured_num_batches_per_objective[obj_name_for_log] = 0
-				self.validation_ds_per_objective[objective_idx] = {"objective": objective_config_from_list, "batches": []}
+				self.measured_num_batches_per_objective[obj_key] = 0
+				self.validation_ds_per_objective[obj_key] = {"objective": objective_config_from_list, "batches": []}
 				continue
 				
 			items_generated_count = 0
@@ -329,13 +336,13 @@ class Birdie:
 					raw_data_item = next(val_data_iter)
 					text_sample = text_grabber(raw_data_item)
 					if not text_sample or not isinstance(text_sample, str):
-						self.print_fn(f"    Got invalid text sample (type: {type(text_sample)}) for {obj_name_for_log}, item {i+1}. Stopping for this objective.")
+						self.print_fn(f"    Got invalid text sample (type: {type(text_sample)}) for {obj_key}, item {i+1}. Stopping for this objective.")
 						break
 				except StopIteration:
-					self.print_fn(f"    Data iterator for {obj_name_for_log} exhausted before generating {self.num_validation_batches} samples (got {items_generated_count}).")
+					self.print_fn(f"    Data iterator for {obj_key} exhausted before generating {self.num_validation_batches} samples (got {items_generated_count}).")
 					break
 				except Exception as e:
-					self.print_fn(f"    Error getting text for {obj_name_for_log}, item {i+1}: {e}")
+					self.print_fn(f"    Error getting text for {obj_key}, item {i+1}: {e}")
 					traceback.print_exc()
 					break
 
@@ -349,48 +356,43 @@ class Birdie:
 					required_keys = ["input_ids", "label_ids", "attention_mask", "segment_ids"]
 					input_ids_len = len(transformed_sample["input_ids"])
 
-					for k in required_keys:
-						val = transformed_sample.get(k)
-						if k == "input_ids":
+					for k_req in required_keys:
+						val = transformed_sample.get(k_req)
+						if k_req == "input_ids":
 							val_np = np.array(val, dtype=np.int32) if not isinstance(val, np.ndarray) else val.astype(np.int32)
-						elif k == "label_ids":
-							# Ensure label_ids match input_ids length, padding with -100
+						elif k_req == "label_ids":
 							label_val = np.full(input_ids_len, -100, dtype=np.int32)
 							if val is not None and len(val) > 0:
 								actual_len = min(len(val), input_ids_len)
 								label_val[:actual_len] = np.array(val[:actual_len], dtype=np.int32) if not isinstance(val, np.ndarray) else val[:actual_len].astype(np.int32)
 							val_np = label_val
-						elif k == "attention_mask":
-							# Default attention mask (all 1s up to input_ids_len) if not provided
+						elif k_req == "attention_mask":
 							val_np = np.ones(input_ids_len, dtype=np.int32) if val is None else (np.array(val, dtype=np.int32) if not isinstance(val, np.ndarray) else val.astype(np.int32))
-						elif k == "segment_ids":
-							# Default segment_ids (all 0s or 1s up to input_ids_len)
+						elif k_req == "segment_ids":
 							val_np = np.zeros(input_ids_len, dtype=np.int32) if val is None else (np.array(val, dtype=np.int32) if not isinstance(val, np.ndarray) else val.astype(np.int32))
-						else: # Should not happen with required_keys
+						else: 
 							val_np = np.array(val, dtype=np.int32) if val is not None else np.zeros(input_ids_len, dtype=np.int32)
 						
-						# Pad or truncate to validation_sequence_length
 						padded_val = np.full(self.validation_sequence_length, 0, dtype=np.int32)
-						if k == "label_ids": padded_val.fill(-100)
+						if k_req == "label_ids": padded_val.fill(-100)
 
 						actual_len = min(len(val_np), self.validation_sequence_length)
 						padded_val[:actual_len] = val_np[:actual_len]
-						final_batch_item[k] = padded_val
+						final_batch_item[k_req] = padded_val
 
-					# This final_batch_item is a single sample, needs to be a batch of 1
-					batch_of_one = {key: np.expand_dims(value, axis=0) for key, value in final_batch_item.items()}
+					batch_of_one = {key_fin: np.expand_dims(value_fin, axis=0) for key_fin, value_fin in final_batch_item.items()}
 					current_samples_for_this_objective.append(batch_of_one)
 					items_generated_count +=1
 				else:
-					self.print_fn(f"    Objective {obj_name_for_log} failed for item {i+1}. Status: {transformed_sample.get('status')}, Msg: {transformed_sample.get('message')}")
+					self.print_fn(f"    Objective {obj_key} failed for item {i+1}. Status: {transformed_sample.get('status')}, Msg: {transformed_sample.get('message')}")
 			
-			self.validation_ds_per_objective[objective_idx] = {
-				"objective": objective_config_from_list, # Store original config from list
+			self.validation_ds_per_objective[obj_key] = { # Use string key
+				"objective": objective_config_from_list, 
 				"batches": current_samples_for_this_objective,
 			}
-			self.measured_num_batches_per_objective[obj_name_for_log] = items_generated_count
+			self.measured_num_batches_per_objective[obj_key] = items_generated_count
 			if items_generated_count < self.num_validation_batches:
-				self.print_fn(f"  Warning: Expected {self.num_validation_batches} val items for {obj_name_for_log}, but generated {items_generated_count}.")
+				self.print_fn(f"  Warning: Expected {self.num_validation_batches} val items for {obj_key}, but generated {items_generated_count}.")
 
 		self._validation_samples_prepared = True
 		self.print_fn("[Birdie] Direct validation samples preparation complete.")
@@ -402,84 +404,119 @@ class Birdie:
 
 		self.validation_key_to_losses = {} 
 		self.validation_num_fulfilled_keys = 0
+		self._fulfilled_keys_this_cycle.clear() # Reset the set for tracking fulfilled keys in this cycle
 
 		flat_batches_to_eval = []
 		if not self.validation_ds_per_objective:
 			self.print_fn("[Birdie Warning] measure_validation_losses: validation_ds_per_objective is empty.")
 			return []
 
-		for objective_idx, data in self.validation_ds_per_objective.items():
-			objective_config = data["objective"]
-			key = objective_config.get("hash_str", objective_config.get("nickname", objective_config["name"]))
+		for obj_key, data in self.validation_ds_per_objective.items(): # Iterate using string keys
+			# objective_config = data["objective"] # Not strictly needed here, key is enough
 			
 			if not data["batches"]:
-				# self.print_fn(f"  No validation batches found for objective '{key}' (idx {objective_idx}). Skipping.")
-				if self.measured_num_batches_per_objective.get(key, -1) == 0: 
-					if key not in self.validation_key_to_losses: 
-						 self.validation_key_to_losses[key] = [] 
+				if self.measured_num_batches_per_objective.get(obj_key, -1) == 0: 
+					if obj_key not in self._fulfilled_keys_this_cycle: 
+						 self.validation_num_fulfilled_keys += 1
+						 self._fulfilled_keys_this_cycle.add(obj_key)
 				continue
 
 			for batch_idx, batch_of_one in enumerate(data["batches"]):
 				if batch_of_one is None: 
-					self.print_fn(f"  Warning: Found None batch at index {batch_idx} for objective '{key}'. Skipping.")
+					self.print_fn(f"  Warning: Found None batch at index {batch_idx} for objective '{obj_key}'. Skipping.")
 					continue
 				
-				# Batch_of_one is already {key: np.array batch_dim=0}, ready for move_to_gpu_fn
 				processed_batch = batch_of_one 
 				if self.move_to_gpu_fn is not None:
 					try:
 						processed_batch = self.move_to_gpu_fn(processed_batch) 
 					except Exception as e:
-						self.print_fn(f"  Error moving batch to GPU for objective '{key}': {e}. Batch content: {str(processed_batch)[:200]}")
+						self.print_fn(f"  Error moving batch to GPU for objective '{obj_key}': {e}. Batch content: {str(processed_batch)[:200]}")
 						continue 
-				flat_batches_to_eval.append((key, processed_batch))
+				flat_batches_to_eval.append((obj_key, processed_batch))
 		
 		return flat_batches_to_eval
 
 
 	def log_validation_loss(self, key: str, loss: float, step_idx: Optional[int] = None) -> None:
-		current_training_step = step_idx if step_idx is not None else self.current_step
+		# current_training_step = step_idx if step_idx is not None else self.current_step # Not used here
 		
 		self.validation_key_to_losses.setdefault(key, []).append(loss)
-
 		num_expected_batches_for_key = self.measured_num_batches_per_objective.get(key, 0)
 
-		print(f"  key: {key}")
-		print(f"  self.validation_num_fulfilled_keys: {self.validation_num_fulfilled_keys}")
-		print(f"  len(self.validation_key_to_losses[{key}]): {len(self.validation_key_to_losses[key])}")
-		
-		if len(self.validation_key_to_losses[key]) >= num_expected_batches_for_key:
-			if len(self.validation_key_to_losses[key]) == num_expected_batches_for_key:
-				# Only increment if it's the first time reaching the exact count for this key in this eval cycle
-				# This check is tricky if validation_num_fulfilled_keys is not reset per eval *before* this loop.
-				# Let's assume validation_num_fulfilled_keys is reset correctly before calling measure_validation_losses.
-				# A more robust way is to track fulfilled keys in a set for the current eval pass.
-				# For now, this simple increment should work if called correctly.
-				self.validation_num_fulfilled_keys += 1
-			# self.print_fn(f"  Logged {len(self.validation_key_to_losses[key])}/{num_expected_batches_for_key} batches for objective '{key}'. Fulfilled keys: {self.validation_num_fulfilled_keys}/{len(self.validation_objectives)}")
+		# Debug prints (can be removed or controlled by verbosity later)
+		# self.print_fn(f"  log_validation_loss for key: {key}, loss: {loss:.4f}")
+		# self.print_fn(f"    len_losses: {len(self.validation_key_to_losses[key])}, expected_batches: {num_expected_batches_for_key}")
+		# self.print_fn(f"    fulfilled_keys_count_before_check: {self.validation_num_fulfilled_keys}, _fulfilled_keys_this_cycle: {self._fulfilled_keys_this_cycle}")
 
+		if key not in self._fulfilled_keys_this_cycle:
+			if len(self.validation_key_to_losses[key]) >= num_expected_batches_for_key:
+				# This key is now fulfilled for this cycle. Increment only if it actually expected batches or expected 0 and got 0.
+				if num_expected_batches_for_key > 0: # Standard case: batches were expected and now logged
+					self.validation_num_fulfilled_keys += 1
+					self._fulfilled_keys_this_cycle.add(key)
+					# self.print_fn(f"    Key {key} fulfilled ({num_expected_batches_for_key} batches). Fulfilled keys count: {self.validation_num_fulfilled_keys}")
+				elif num_expected_batches_for_key == 0 and not self.validation_key_to_losses.get(key, []): 
+					# Edge case: 0 batches were expected, and 0 were logged (list is empty or key not present)
+					self.validation_num_fulfilled_keys += 1
+					self._fulfilled_keys_this_cycle.add(key)
+					# self.print_fn(f"    Key {key} (0 expected batches) fulfilled. Fulfilled keys count: {self.validation_num_fulfilled_keys}")
+        # The decision to update the reward model is now handled by _maybe_update_reward_model,
+        # called externally after all losses for an eval cycle are logged.
+
+	def _maybe_update_reward_model(self, current_training_step: int) -> bool:
+		"""
+		Checks if all validation objectives are fulfilled and, if so, updates the reward model.
+		This should be called AFTER all log_validation_loss calls for an evaluation cycle.
+		"""
 		if self.validation_num_fulfilled_keys >= len(self.validation_objectives):
-			# self.print_fn(f"All validation losses collected for step {current_training_step}.")
-			
-			mean_losses_dict = {
-				obj_key: np.mean(losses_list) if losses_list else 0.0 
-				for obj_key, losses_list in self.validation_key_to_losses.items()
-			}
+			self.print_fn(f"[Birdie] All {self.validation_num_fulfilled_keys}/{len(self.validation_objectives)} validation objective losses collected for step {current_training_step}. Updating reward model.")
+
+			mean_losses_dict: Dict[str, float] = {}
+			for obj_key_from_val, losses_list in self.validation_key_to_losses.items():
+				mean_losses_dict[obj_key_from_val] = np.mean(losses_list) if losses_list else 0.0
 			
 			current_losses_vector_list = []
-			for obj_setting in self.objectives: 
-				obj_eval_key = obj_setting.get("hash_str", obj_setting.get("nickname", obj_setting["name"]))
-				loss_val = mean_losses_dict.get(obj_eval_key, 0.0) 
+			# The loss vector fed to the agent should correspond to self.objectives (training objectives)
+			# and be in the same order.
+			for train_obj_setting in self.objectives: 
+				# Determine the key used during validation for this training objective
+				eval_key_for_train_obj = train_obj_setting.get("nickname", 
+										train_obj_setting.get("hash_str", 
+										train_obj_setting.get("name")))
+				
+				loss_val = mean_losses_dict.get(eval_key_for_train_obj, 0.0) 
 				current_losses_vector_list.append(loss_val)
 			
 			self.current_validation_losses = np.array(current_losses_vector_list, dtype=np.float32)
 
+			if len(self.current_validation_losses) != len(self.objectives):
+				self.print_fn(f"[Birdie CRITICAL ERROR] Mismatch between current_validation_losses length ({len(self.current_validation_losses)}) "
+							  f"and number of training objectives ({len(self.objectives)}). This can happen if validation_objectives "
+							  f"and objectives have different key structures or counts. Agent update might be compromised.")
+				# Fallback: if lengths mismatch, try to use a zero vector or skip update to prevent crash
+				# For now, we'll proceed, but this indicates a config issue.
+				# A more robust solution would be to ensure a clear mapping or handle this more gracefully.
+				if len(self.current_validation_losses) < len(self.objectives):
+					padding = np.zeros(len(self.objectives) - len(self.current_validation_losses), dtype=np.float32)
+					self.current_validation_losses = np.concatenate((self.current_validation_losses, padding))
+				elif len(self.current_validation_losses) > len(self.objectives):
+					self.current_validation_losses = self.current_validation_losses[:len(self.objectives)]
+
+
 			if self.old_loss_vector is None: 
 				self.old_loss_vector = self.current_validation_losses.copy()
-				self.print_fn(f"Initialized old_loss_vector at step {current_training_step} with losses: {self.old_loss_vector}")
+				self.print_fn(f"[Birdie] Initialized old_loss_vector at step {current_training_step} with losses: {self.old_loss_vector}")
 			else:
+				# Ensure old_loss_vector also matches the number of training objectives for the agent
+				if len(self.old_loss_vector) != len(self.objectives):
+					self.print_fn(f"[Birdie Warning] old_loss_vector length ({len(self.old_loss_vector)}) "
+								  f"mismatches training objectives count ({len(self.objectives)}). Resetting old_loss_vector.")
+					self.old_loss_vector = np.zeros(len(self.objectives), dtype=np.float32) # Or use current_validation_losses if lengths match now
+
+
 				new_action_probs = self.update_reward_model(
-					action_taken=self.last_action,
+					action_taken=self.last_action, # last_action should also match len(self.objectives)
 					old_loss_vector=self.old_loss_vector,
 					new_loss_vector=self.current_validation_losses,
 					old_step_idx=self.last_reward_step_idx, 
@@ -490,16 +527,21 @@ class Birdie:
 
 				for i, obj_setting in enumerate(self.objectives):
 					obj_setting["prob"] = float(np.round(new_action_probs[i], 4)) 
-					obj_setting["loss"] = float(np.round(self.current_validation_losses[i], 4)) 
+					obj_setting["loss"] = float(np.round(self.current_validation_losses[i], 4)) if i < len(self.current_validation_losses) else 0.0
 
 				if hasattr(self, 'controller') and self.controller:
 					self.controller.update(self.objectives, clear_prefetched=False) 
+					self.print_fn(f"[Birdie] Updated controller with new objective probabilities at step {current_training_step}.")
 				else:
-					self.print_fn("Controller not available to update objectives.")
+					self.print_fn("[Birdie] Controller not available to update objectives.")
 			
 			self.last_reward_step_idx = current_training_step 
-			self.validation_key_to_losses = {} 
-			self.validation_num_fulfilled_keys = 0 
+			return True # Indicates update happened
+		else:
+			# This case is normal if not all objectives are fulfilled yet.
+			# self.print_fn(f"[Birdie] Reward model NOT updated at step {current_training_step} (fulfilled keys: {self.validation_num_fulfilled_keys}/{len(self.validation_objectives)}).")
+			pass
+		return False
 
 
 	def update_reward_model(
@@ -547,6 +589,7 @@ class Birdie:
 					items.append((new_key, v))
 			return dict(items)
 
+		# Use self.objectives (training objectives) for reporting current sampling probabilities
 		flat_objectives_configs = [flatten_dict(obj_conf) for obj_conf in self.objectives]
 		
 		for idx, objective_config_flat in enumerate(flat_objectives_configs):
@@ -560,11 +603,14 @@ class Birdie:
 				except TypeError:
 					serializable_config[k] = str(v) 
 
-			name_key = serializable_config.get("nickname", serializable_config.get("name", f"objective_{idx}"))
+			# Use nickname as the primary key for the output dictionary
+			name_key = serializable_config.get("nickname", 
+						 serializable_config.get("hash_str", 
+						 serializable_config.get("name", f"objective_{idx}")))
 			
 			ret_dict[name_key] = {
 				"current_sampling_probability": float(current_action_probs[idx]) if idx < len(current_action_probs) else 0.0,
-				"config": {k:v for k,v in serializable_config.items() if k not in ["name", "nickname", "prob", "prob_initial", "loss"]} 
+				"config": {k_cfg:v_cfg for k_cfg,v_cfg in serializable_config.items() if k_cfg not in ["name", "nickname", "hash_str", "prob", "prob_initial", "loss"]} 
 			}
 			if "prob" in serializable_config: ret_dict[name_key]["config"]["original_prob_config"] = serializable_config["prob"]
 			if "prob_initial" in serializable_config: ret_dict[name_key]["config"]["normalized_initial_prob"] = serializable_config["prob_initial"]
