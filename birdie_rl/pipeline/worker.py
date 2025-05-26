@@ -192,15 +192,11 @@ class Worker:
 		  - None if no new instructions,
 		  - True if instructions were updated.
 		"""
-		try:
-			data = self.tasks_queue.get(timeout=0.1)
-			self.print(f"[Worker {self.worker_id} (split: {self.split})] _try_get_instructions => got data: {data}")
-		except queue.Empty:
-			return None
-		try:
-			self.tasks_queue.put(data)
-		except:
-			pass
+                try:
+                        data = self.tasks_queue.get(timeout=0.1)
+                        self.print(f"[Worker {self.worker_id} (split: {self.split})] _try_get_instructions => got data: {data}")
+                except queue.Empty:
+                        return None
 		if data is None:
 			return False
 
@@ -310,13 +306,22 @@ class Worker:
 				if isinstance(batch_data, str):
 					raise ValueError(f"[Worker {self.worker_id} (split: {self.split})] ERROR: batch_data is a string: {batch_data}")
 				
-				while True:
-					try:
-						self.results_queue.put(item, timeout=0.5)
-						break
-					except queue.Full:
-						self.print(f"[Worker {self.worker_id} (split: {self.split})] results_queue.put() failed => retrying...")
-						continue
+                                while True:
+                                        try:
+                                                self.results_queue.put(item, timeout=0.5)
+                                                break
+                                        except queue.Full:
+                                                self.print(
+                                                        f"[Worker {self.worker_id} (split: {self.split})] results_queue full => checking for stop signal"
+                                                )
+                                                stop_check = self._try_get_instructions()
+                                                if stop_check is False:
+                                                        self.print(
+                                                                f"[Worker {self.worker_id} (split: {self.split})] tasks_queue gave None (sentinel) => close()"
+                                                        )
+                                                        self.close()
+                                                        return
+                                                time.sleep(0.1)
 
 				self.print(f"[Worker {self.worker_id} (split: {self.split})] Sub-batch sent to results_queue. results_queue.qsize()={self.results_queue.qsize()}, batcher.get_remaining_space()={self.batcher.get_remaining_space()}")
 
