@@ -64,12 +64,12 @@ class MainController:
 		except Exception:
 			pass
 
-		# Send sentinel (None) values to the tasks_queue to signal workers to stop.
-		for _ in range(10):
-			try:
-				self.tasks_queue.put_nowait(None)
-			except Exception:
-				pass
+                # Send a sentinel (None) for each worker so they can exit.
+                for _ in range(self.num_workers):
+                        try:
+                                self.tasks_queue.put_nowait(None)
+                        except Exception:
+                                pass
 
 
 	def update(self, objectives_config, clear_prefetched=False,):
@@ -77,24 +77,25 @@ class MainController:
 		Update the objectives configuration.
 		"""
 		self.objectives_config = objectives_config
-		instructions = {"objectives": self.objectives_config}
-		# print("[MainController] Sending objective distribution to worker.")
+                instructions = {"objectives": self.objectives_config}
 
-		for _ in range(2):
-			while (0 < self.tasks_queue.qsize()):
-				try:
-					self.tasks_queue.get(timeout=0.1)
-				except queue.Empty:
-					break
+                # Drain any existing instructions so workers read the latest.
+                try:
+                        while True:
+                                self.tasks_queue.get_nowait()
+                except Exception:
+                        pass
 
-			if clear_prefetched:
-				while (0 < self.results_queue.qsize()):
-					try:
-						self.results_queue.get(timeout=0.1)
-					except queue.Empty:
-						break
+                if clear_prefetched:
+                        try:
+                                while True:
+                                        self.results_queue.get_nowait()
+                        except Exception:
+                                pass
 
-		self.tasks_queue.put(instructions)
+                # Send the updated instructions once for each worker.
+                for _ in range(self.num_workers):
+                        self.tasks_queue.put(instructions)
 
 
 
