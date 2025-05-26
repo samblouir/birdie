@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "birdie-rl"
-version = "0.1.4"
+version = "0.2.0"
 description = "An automated reward modeling and text-processing pipeline for multi-objective training of language models."
 authors = [
     { name = "Sam Blouir", email = "samblouir@gmail.com" },
@@ -18,7 +18,7 @@ requires-python = ">=3.8"
 
 # List direct dependencies here. For example:
 dependencies = [
-    "numpy==1.26.4",
+    "numpy",
     "torch",
     "tiktoken",
     "datasets",
