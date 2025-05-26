@@ -1,361 +1,396 @@
 # pipeline_generator.py
 import os
+import sys 
 import threading
-import queue
-from typing import List
-import torch
-from datasets import load_dataset
+import queue as local_queue 
 import multiprocessing as mp
-import queue as local_queue
+import queue # For mp.Queue.Empty exception
 import time
+from typing import List, Callable, Any
+import traceback 
+
 from birdie_rl.pipeline.main_controller import MainController
 from birdie_rl.pipeline.worker import Worker
-# from birdie_rl.load_objective import load_objective
-# from birdie_rl.packer import SequencePacker
-import dill
-import numpy as np
+# from datasets import load_dataset 
+import torch 
+import numpy as np 
+from functools import partial
 
-def datagen(
+
+def datagen_thread_fn(
 	max_batches: int,
-	results_q: mp.Queue,
-	tasks_q: mp.Queue,
-	output_q: queue.Queue,
-	sample_q: mp.Queue,
-
-	worker_threads: List[threading.Thread],
-	accelerator=None,
+	results_q: mp.Queue, 
+	output_q: local_queue.Queue, 
+	datagen_stop_event: threading.Event, 
+	num_batcher_processes: int, 
+	accelerator=None, 
 	move_to_gpu_fn=None,
-	split=None,
 ):
-	print_fn = print if accelerator is None else accelerator.print
+	print_fn = print 
+	pid = os.getpid()
+	thread_id = threading.get_ident()
+	# print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] Started. Expecting sentinels from {num_batcher_processes} batchers.", flush=True)
 
 	batches_received = 0
-	while (max_batches == -1) or (batches_received < max_batches):
-		try:
-			# 5) Wait for a batch from the worker => 
-			#    each batch is a dict: {"batch_items": [...], "worker_id": ...}
-			batch_dict = results_q.get(timeout=0.1)
-			# batch_dict = dill.loads(batch_dict)
-		except queue.Empty:
+	sentinels_received_from_batchers = 0
+	try:
+		while not datagen_stop_event.is_set():
+			if max_batches != -1 and batches_received >= max_batches:
+				# print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] Reached max_batches ({max_batches}). Setting stop event.", flush=True)
+				if not datagen_stop_event.is_set(): datagen_stop_event.set() 
+				break
 
+			try:
+				batch_dict_from_batcher_proc = results_q.get(timeout=0.1) 
+			except queue.Empty: 
+				if datagen_stop_event.is_set(): 
+					# print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] Stop event IS SET during results_q.get timeout. Breaking.", flush=True)
+					break 
+				if num_batcher_processes > 0 and sentinels_received_from_batchers >= num_batcher_processes: 
+					# print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] All batcher sentinels ({sentinels_received_from_batchers}/{num_batcher_processes}) received & results_q timed out. Setting stop event.", flush=True)
+					if not datagen_stop_event.is_set(): datagen_stop_event.set()
+				continue 
 			
-			# if split and split == "train":
-			# 	tp = {
-			# 		"results_q.qsize()": results_q.qsize(),
-			# 		"output_q.qsize()": output_q.qsize(),
-			# 		"tasks_q.qsize()": tasks_q.qsize(),
-			# 		"sample_q.qsize()": sample_q.qsize(),
-			# 	}
-			# 	strs = []
-			# 	for tp_idx, (key, value) in enumerate(tp.items()):
-			# 		strs.append(f"{key}: {value:,}")
-			# 	print_fn(f"  pipeline_generator.py  batches_received: {batches_received:,},  ", '  '.join(strs), flush=True, end='\n')
-				
+			if datagen_stop_event.is_set(): 
+				# print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] Stop event set after results_q.get(). Breaking.", flush=True)
+				break 
 
-				
-			# print_fn(f"[pipeline_data_generator] Timed out waiting for a batch. results_q.qsize(): {results_q.qsize()} Retrying...")
-			continue
+			if batch_dict_from_batcher_proc is None: 
+				sentinels_received_from_batchers += 1
+				# print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] Received None sentinel from results_q ({sentinels_received_from_batchers}/{num_batcher_processes}).", flush=True)
+				if num_batcher_processes > 0 and sentinels_received_from_batchers >= num_batcher_processes:
+					# print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] All batcher sentinels received. Setting stop event and breaking.", flush=True)
+					if not datagen_stop_event.is_set(): datagen_stop_event.set() 
+					break 
+				continue 
 
-		if batch_dict is None:
-			# If we ever got the "None" sentinel that stems from birdie.close(), we should exit our while look, send out "None" on our queues to cause those threads or processes to exit also, and then try to join all of our threads.
-			# TODO: FIX THIS. PATCH IMPLEMENTED BELOW USING os._exit(1)
-			break
+			final_batch_data = batch_dict_from_batcher_proc.get("batch_items") 
+			if final_batch_data is None:
+				# print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] Received item with no 'batch_items'. Skipping.", flush=True)
+				continue
 
-		# tp = {
-		# 	"results_q.qsize()": results_q.qsize(),
-		# 	"output_q.qsize()": output_q.qsize(),
-		# 	"tasks_q.qsize()": tasks_q.qsize(),
-		# 	"sample_q.qsize()": sample_q.qsize(),
-		# }
-		# strs = []
-		# for tp_idx, (key, value) in enumerate(tp.items()):
-		# 	strs.append(f"{key}: {value:,}")
-		# print_fn(f"  pipeline_generator.py  batches_received: {batches_received:,},  ", '  '.join(strs), flush=True, end='\n')
+			if move_to_gpu_fn is not None and isinstance(final_batch_data, dict):
+				final_batch_data = move_to_gpu_fn(final_batch_data)
 			
+			try:
+				output_q.put(final_batch_data, timeout=0.5) 
+				batches_received += 1
+			except local_queue.Full: 
+				# print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] output_q full. Checking stop event.", flush=True)
+				if datagen_stop_event.is_set(): break 
+				time.sleep(0.01) 
 
-		batches_received += 1
-		# print(f"  batch_dict: {batch_dict}")
+	except Exception as e:
+		print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] EXCEPTION: {e}", flush=True) # Keep error logs
+		traceback.print_exc(file=sys.stdout); sys.stdout.flush()
+	finally:
+		# print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] Entering finally. stop_event: {datagen_stop_event.is_set()}. Sentinels received: {sentinels_received_from_batchers}/{num_batcher_processes}", flush=True)
+		if not datagen_stop_event.is_set(): 
+			# print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] Setting stop_event in finally.", flush=True)
+			datagen_stop_event.set() 
 		
-			
-		batch = batch_dict["batch_items"]
-		# print(f"  received batch: {batch.keys()}, results_q.qsize(): {results_q.qsize()}, output_q.qsize(): {output_q.qsize()}, tasks_q.qsize(): {tasks_q.qsize()}, sample_q.qsize(): {sample_q.qsize()}", flush=True,)
-
-
-		if move_to_gpu_fn is not None:
-			batch = move_to_gpu_fn(batch)
-
-		output_q.put(batch)
-		# yield batch
-	
-	# 8) Once we've yielded all we want, we can stop the worker
-	#    by sending the sentinel None. The MainController also does this,
-	#    but in case you want a direct stop:
-	tasks_q.put(None)
-	output_q.put(None)
-
-	# Make sure threads close properly (you can optionally join them here)
-	# for idx, worker_thread in enumerate(worker_threads):
-	# 	print_fn(f"  Joining all pipeline worker threads. ({idx+1} of {len(worker_threads)})", flush=True,)
-	# 	worker_thread.join()
-	# print_fn(f"  All pipeline worker threads joined.", flush=True,)
-
-	# Patch to try and solve non-exiting threads or processes
-	os._exit(1)
-
-def samples_to_batch(
-		sample_queue: mp.Queue,
-		results_queue: mp.Queue,
-		batch_size:int,
-	):
-	batch = []
-
-	start_time = time.time()
-
-	time_waiting_for_samples = []
-	ctr = 0
-	while True:
+		# print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] Attempting to put None sentinel on output_q.", flush=True)
 		try:
-			start_waiting = time.time()
-			packed_sample = sample_queue.get(timeout=1.0)
-			time_waiting = time.time() - start_waiting
-			time_waiting_for_samples.append(time_waiting)
-		except Exception as e:
-			# print(f"  Exception in samples_to_batch():  sample_queue.qsize(): {sample_queue.qsize():,},  sample_queue.get() e: {e}")
-			continue
+			output_q.put(None, timeout=0.2) 
+			# print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] Successfully put None on output_q.", flush=True)
+		except local_queue.Full: 
+			print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] output_q full while trying to put sentinel in finally.", flush=True) # Keep important warnings
+		except Exception as e_f:
+			print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] Error putting None in finally: {e_f}", flush=True)
+		# print_fn(f"[datagen_thread_fn PID {pid} TID {thread_id}] Thread finished.", flush=True)
 
 
-		# worker_id = packed_sample["worker_id"]
-		# packed_arr = packed_sample["packed_data"]
-		# objective_name = packed_sample["objective_name"]
-
-		batch.append(packed_sample)
-
-		if len(batch) == batch_size:
-			start_time_concatenating = time.time()
-			keys = [
-				"input_ids",
-				"label_ids",
-				"segment_ids",
-				"attention_mask",
-			]
-			stacked_batch = {}
-			for key in keys:
-				stacked_batch[key] = np.stack([x["packed_data"][key] for x in batch])
-			stacked_batch = {k:torch.tensor(v, dtype=torch.long) for k,v in stacked_batch.items()}
-			batch = []
-
-			end_time_concatenating = time.time()
-			time_concatenating = (end_time_concatenating - start_time_concatenating)
-
-			# start_time = new_time
+def samples_to_batch_fn_wrapper(*args):
+	pid = os.getpid()
+	# print(f"!!!!!!!!!! [samples_to_batch_fn_wrapper PID {pid}] PROCESS TARGET ENTERED !!!!!!!!!!", flush=True) # Keep this one for now
+	try:
+		samples_to_batch_fn(*args)
+	except Exception as e_wrapper:
+		print(f"!!!!!!!!!! [samples_to_batch_fn_wrapper PID {pid}] UNCAUGHT EXCEPTION IN TARGET FUNCTION: {e_wrapper} !!!!!!!!!!", flush=True) # Keep error logs
+		traceback.print_exc(file=sys.stdout) 
+		sys.stdout.flush() 
+	# finally:
+		# print(f"!!!!!!!!!! [samples_to_batch_fn_wrapper PID {pid}] PROCESS TARGET EXITED FINALLY (samples_to_batch_fn completed or errored) !!!!!!!!!!", flush=True)
 
 
-			time_sending = time.time()
-			results_queue.put({
-				# "worker_id": worker_id,
-				"batch_items": stacked_batch,
-				# "objective_name": objective_name,
-			})
+def samples_to_batch_fn(
+	sample_queue: mp.Queue, 
+	results_queue: mp.Queue, 
+	batch_size: int, 
+	stop_event: mp.Event, 
+	num_worker_processes_for_this_controller: int 
+):
+	print_fn = print 
+	pid = os.getpid()
+	# print_fn(f"!!!!!!!!!! [samples_to_batch_fn (actual) PID {pid}] ALIVE AND STARTED !!!!!!!!!! Target batch: {batch_size}. Expecting sentinels from {num_worker_processes_for_this_controller} workers.", flush=True)
+	
+	current_batch_list = []
+	sentinels_received_from_workers = 0
+	
+	try: 
+		while True: 
+			if stop_event.is_set():
+				# print_fn(f"[samples_to_batch_fn PID {pid}] stop_event IS SET at top of loop. Breaking.", flush=True)
+				break
 
+			all_workers_confirmed_done = (num_worker_processes_for_this_controller > 0 and \
+			                             sentinels_received_from_workers >= num_worker_processes_for_this_controller)
 
-			new_time = time.time()
-			elapsed = (new_time - start_time)
+			if all_workers_confirmed_done:
+				# print_fn(f"[samples_to_batch_fn PID {pid}] All {num_worker_processes_for_this_controller} workers confirmed done. Setting stop_event and breaking from top of loop.", flush=True)
+				if not stop_event.is_set(): stop_event.set() 
+				break 
 
-			time_sending = (new_time - time_sending)
+			try:
+				packed_sample_item = sample_queue.get(timeout=0.1) 
+			except queue.Empty: 
+				if stop_event.is_set(): 
+					# print_fn(f"[samples_to_batch_fn PID {pid}] stop_event set during sample_queue.get timeout. Breaking.", flush=True)
+					break 
+				continue 
+			
+			if stop_event.is_set(): 
+				# print_fn(f"[samples_to_batch_fn PID {pid}] stop_event found set after sample_queue.get(). Breaking.", flush=True)
+				break
 
-			ctr += 1
-			time_waiting_for_samples = np.sum(time_waiting_for_samples)
-			throughput = (ctr) / elapsed
+			if packed_sample_item is None: 
+				sentinels_received_from_workers +=1
+				# print_fn(f"[samples_to_batch_fn PID {pid}] Received None sentinel from sample_queue ({sentinels_received_from_workers}/{num_worker_processes_for_this_controller}).", flush=True)
+				continue 
 
+			if not isinstance(packed_sample_item, dict) or "packed_data" not in packed_sample_item:
+				# print_fn(f"[samples_to_batch_fn PID {pid}] Received invalid item, skipping: {str(packed_sample_item)[:100]}", flush=True)
+				continue
+				
+			current_batch_list.append(packed_sample_item["packed_data"])
 
-
-			# print(f"  Took {elapsed:.2f} seconds to pack and send a batch of {batch_size} samples.  Throughput: {throughput:.2f} batches/sec,  time_waiting_for_samples: {time_waiting_for_samples:0.2f},  time_concatenating: {time_concatenating:0.2f},  time_sending: {time_sending:0.2f}", flush=True, )
-			if ctr == 5:
-				start_time = time.time()
-				ctr = 0
-			time_waiting_for_samples = []
-
-
+			if len(current_batch_list) >= batch_size:
+				keys = current_batch_list[0].keys() 
+				stacked_batch_dict = {}
+				try:
+					for key in keys:
+						stacked_batch_dict[key] = np.stack([sample[key] for sample in current_batch_list])
+				except ValueError as e:
+					print(f"[samples_to_batch_fn PID {pid}] Error stacking batch: {e}.", flush=True) # Keep error log
+					current_batch_list = [] 
+					continue 
+				
+				item_for_results_q = {"batch_items": stacked_batch_dict} 
+				try:
+					results_queue.put(item_for_results_q, timeout=0.5) 
+				except queue.Full: 
+					# print_fn(f"[samples_to_batch_fn PID {pid}] results_queue full. Checking stop_event.", flush=True)
+					if stop_event.is_set(): break
+					time.sleep(0.01) 
+				current_batch_list = []
+	
+	except KeyboardInterrupt: 
+		print_fn(f"[samples_to_batch_fn PID {pid}] Caught KeyboardInterrupt. Ensuring stop_event is set.", flush=True) # Keep this
+		if not stop_event.is_set(): stop_event.set()
+	except Exception as e:
+		print_fn(f"[samples_to_batch_fn PID {pid}] EXCEPTION in main loop: {e}", flush=True) # Keep error logs
+		traceback.print_exc(file=sys.stdout); sys.stdout.flush()
+		if not stop_event.is_set(): stop_event.set() 
+	finally:
+		# print_fn(f"[samples_to_batch_fn PID {pid}] Entering finally. stop_event: {stop_event.is_set()}, sentinels_from_workers: {sentinels_received_from_workers}/{num_worker_processes_for_this_controller}", flush=True)
+		if not stop_event.is_set(): 
+			# print_fn(f"[samples_to_batch_fn PID {pid}] Setting stop_event in finally because it wasn't set.", flush=True)
+			stop_event.set() 
+		
+		if current_batch_list and len(current_batch_list) >= batch_size : 
+			# print_fn(f"[samples_to_batch_fn PID {pid}] Flushing a final batch of {len(current_batch_list)} items in finally.", flush=True)
+			try:
+				keys = current_batch_list[0].keys()
+				samples_to_stack = current_batch_list[:batch_size] 
+				stacked_batch_dict = {key: np.stack([sample[key] for sample in samples_to_stack]) for key in keys}
+				item_for_results_q = {"batch_items": stacked_batch_dict}
+				results_queue.put(item_for_results_q, timeout=0.2) 
+				# print_fn(f"[samples_to_batch_fn PID {pid}] Flushed one final batch to results_queue in finally.", flush=True)
+			except Exception as e_f: 
+				print_fn(f"[samples_to_batch_fn PID {pid}] Error during final batch flush: {e_f}", flush=True) # Keep error log
+		
+		# print_fn(f"[samples_to_batch_fn PID {pid}] Attempting to put None sentinel on results_queue.", flush=True)
+		try:
+			results_queue.put(None, timeout=0.2) 
+			# print_fn(f"[samples_to_batch_fn PID {pid}] Successfully put None on results_queue.", flush=True)
+		except queue.Full: 
+			print_fn(f"[samples_to_batch_fn PID {pid}] results_queue full while trying to put sentinel in finally.", flush=True) # Keep important warning
+		except Exception as e_rs:
+			print_fn(f"[samples_to_batch_fn PID {pid}] Error putting None to results_queue in finally: {e_rs}", flush=True) # Keep error log
+		# print_fn(f"[samples_to_batch_fn PID {pid}] Process finished.", flush=True)
 
 
 def pipeline_data_generator(
-	max_batches=-1,
-	batch_size=8,
+	max_batches=-1,      
+	batch_size=8,        
 	sequence_length=4096,
-	num_workers = 16,
-	# sequence_length=128
+	num_workers = 16, 
 	objectives_config=None,
 	accelerator=None,
-	move_to_gpu_fn=None,
-	data_generator=None,
+	move_to_gpu_fn=None, 
+	data_generator: Callable = None, 
 	data_generator_fn_kwarg_overrides={},
-	infinite_loop=True,
-	split=None,
-	# accelerator=None,
-	config={},
+	infinite_loop=True,  
+	split=None,          
+	config={},           
 ):
-	assert(data_generator is not None), f"  {__file__}.pipeline_data_generator(): data_generator is None. Please provide a data generator. pipeline_data_generator() currently only supports a list for the data_generator input that supports len() and data_generator[worker_idx::num_workers]."
-	# try:
-	# 	assert(0 < len(data_generator))
-	# except Exception as e:
-	# 	raise NotImplementedError(f'  {__file__}.pipeline_data_generator(): You passed in ([...], data_generator={data_generator}), and pipeline_data_generator() currently only supports a list for the data_generator input that supports len() and data_generator[worker_idx::num_workers].')
+	print_fn = print 
+	parent_pid = os.getpid()
+	# print_fn(f"[pipeline_data_generator PID {parent_pid}] INITIALIZING...", flush=True)
 
-	"""
-	Spawns the pipeline in threads and yields (input_ids, label_ids, segment_ids, attention_mask)
-	for each batch. This can directly replace your dummy data generator in minimal_trainer.
-	"""
-	# 0) Calculate
-	if accelerator is None:
-		total_workers = (num_workers)
-	else:
-		total_workers = (num_workers * accelerator.num_processes)
+	if data_generator is None:
+		raise ValueError("`data_generator` function must be provided.")
+	if not callable(data_generator):
+		raise ValueError("`data_generator` must be a callable function.")
 
+	num_accelerator_processes = accelerator.num_processes if accelerator else 1
+	num_workers_total_across_accelerators = num_workers * num_accelerator_processes 
+	num_local_workers = num_workers 
 
-	# 1) Create queues
-	tasks_q = mp.Queue()
-	results_q = mp.Queue(8)
-	sample_queue = mp.Queue(8)
-	output_q = local_queue.Queue(8)
-
-	if objectives_config is None:
-		next_token_prediction = {
-				"name": "next_token_prediction",
-				"prob": 0.5,
-			}
-		objectives_config = [next_token_prediction]
-
-	# if split is not None and split == 'train':
-	# 	worker_idx = accelerator.process_index
-	# 	num_processes = accelerator.num_processes
-	# 	total_num_workers = num_processes * num_workers
 	
+	tasks_q = mp.Queue(maxsize=num_local_workers * 2)  
+	sample_q = mp.Queue(maxsize=num_local_workers * 16 + num_accelerator_processes + 5) 
+	final_batches_q = mp.Queue(maxsize=32 + num_accelerator_processes + 5) 
+	output_q_for_generator = local_queue.Queue(maxsize=16) 
+
+
+	if objectives_config is None: 
+		objectives_config = [{"name": "next_token_prediction", "prob": 1.0}]
+
+	worker_processes = []
+	current_accelerator_worker_offset = (num_local_workers * accelerator.process_index) if accelerator else 0
 	
-	worker_threads = []
-	our_worker_id_offset = (num_workers*accelerator.process_index) if accelerator is not None else 0
-	for worker_id in range(our_worker_id_offset, our_worker_id_offset + num_workers):
-
-		# if split and split in ['train']:
-		# 	our_data_generator = data_generator[worker_id::total_workers]
-		# 	print(f"  pipeline_generator.py  worker_id: {worker_id},  len(our_data_generator): {len(our_data_generator)}")
-		# else:
-		# 	our_data_generator = data_generator
-		# 	print(f"  pipeline_generator.py  worker_id: {worker_id},  split: {split}")
-		# print(f"  data_generator: {data_generator}")
-		data_generator_kwargs = dict(
-			split=split,
-			worker_id=worker_id,
-			num_workers=total_workers,
-			rng_seed=0,
-		)
-		data_generator_kwargs.update(data_generator_fn_kwarg_overrides)
-		our_data_generator = data_generator(**data_generator_kwargs)
-
+	# print_fn(f"[pipeline_data_generator PID {parent_pid}] Creating {num_local_workers} Worker process objects...", flush=True)
+	for local_idx in range(num_local_workers): 
+		global_worker_id = current_accelerator_worker_offset + local_idx
 		
-		worker = Worker(
-			worker_id=worker_id,
-			total_workers=total_workers,
+		data_gen_kwargs_for_worker = dict(
+			split=split,
+			worker_id=global_worker_id, 
+			num_workers=num_workers_total_across_accelerators, 
+			rng_seed=config.get("seed", int(time.time())) + global_worker_id, 
+		)
+		data_gen_kwargs_for_worker.update(data_generator_fn_kwarg_overrides)
+		
+		this_worker_data_gen_fn = partial(data_generator, **data_gen_kwargs_for_worker)
+
+		worker_instance_for_process = Worker( 
+			worker_id=global_worker_id, 
+			total_workers=num_workers_total_across_accelerators, 
 			tasks_queue=tasks_q,
-			results_queue=results_q,
-			sample_queue=sample_queue,
+			results_queue=None, 
+			sample_queue=sample_q, 
 			sequence_length=sequence_length,
-			batch_size=batch_size,
-			# batch_size=1,
 			min_seq_len_for_packing=config.get("min_seq_len_for_packing", 64),
-			data_generator=our_data_generator,
+			data_generator=this_worker_data_gen_fn, 
 			infinite_loop=infinite_loop,
 			split=split,
 			tokenizer=config['tokenizer'],
 			text_grabber_fn=config.get("text_grabber_fn", None),
 			start_generating_paradigm=config.get("start_generating_paradigm", "\n<|assistant|>\n"),
+			rng_seed=config.get("seed", 0) 
 		)
-		worker_thread = mp.Process(target=worker.run, )
-		worker_threads.append(worker_thread)
+		p = mp.Process(target=worker_instance_for_process.run, daemon=True)
+		worker_processes.append(p)
+	# print_fn(f"[pipeline_data_generator PID {parent_pid}] Worker process objects created.", flush=True)
 
-	num_bp = 8 if split == 'train' else 1
-	for batcher in range(num_bp):
-		batch_proc = mp.Process(target=samples_to_batch, args=(sample_queue, results_q, batch_size))
-		worker_threads.append(batch_proc)
 
-	# This is the generator that the workers output to.
-	datagen_kwargs = dict(
-		max_batches=max_batches,
-		results_q=results_q,
-		tasks_q=tasks_q,
-		output_q=output_q,
-		sample_q=sample_queue,
-		worker_threads=worker_threads,
-		accelerator=accelerator,
-		move_to_gpu_fn=move_to_gpu_fn,
-		split=split,
-	)
-	# generator = datagen(**datagen_kwargs)
-	threading.Thread(target=datagen, kwargs=datagen_kwargs).start()
+	num_batcher_processes = 1 
+	# print_fn(f"[pipeline_data_generator PID {parent_pid}] Creating {num_batcher_processes} samples_to_batch_fn process objects...", flush=True)
+	batcher_processes = []
+	batcher_stop_event = mp.Event() 
 
-	def _generator():
-		ctr = 0
-		while True:
-			try:
-				yield output_q.get(timeout=1)
-			except queue.Empty:
-				continue
-			ctr += 1
+	for _ in range(num_batcher_processes):
+		p = mp.Process(
+			target=samples_to_batch_fn_wrapper, 
+			args=(sample_q, final_batches_q, batch_size, batcher_stop_event, len(worker_processes)), 
+			daemon=True
+		)
+		batcher_processes.append(p)
+	# print_fn(f"[pipeline_data_generator PID {parent_pid}] samples_to_batch_fn process objects created.", flush=True)
 
-	generator = _generator()
 
-	
-	# 3) Create MainController & Worker
 	main_ctrl = MainController(
 		tasks_queue=tasks_q,
-		results_queue=results_q,
+		sample_queue=sample_q, 
 		objectives_config=objectives_config,
-		num_workers=num_workers,
-		max_batches=max_batches,
-		# move_to_gpu_fn=move_to_gpu_fn,
+		worker_processes=worker_processes, 
+		batcher_processes=batcher_processes, 
+		batcher_stop_event=batcher_stop_event, 
+		num_workers_total=len(worker_processes), 
 	)
+	# print_fn(f"[pipeline_data_generator PID {parent_pid}] Calling main_ctrl.run()", flush=True)
+	main_ctrl.run() 
 
-	main_ctrl.run()
-
-
+	datagen_stop_event = threading.Event() 
+	datagen_thread = threading.Thread(
+		target=datagen_thread_fn,
+		args=(
+			max_batches,
+			final_batches_q,
+			output_q_for_generator,
+			datagen_stop_event, 
+			num_batcher_processes, 
+			accelerator,
+			move_to_gpu_fn,
+		),
+		daemon=True
+	)
 	
-	for worker_id, (worker_thread) in enumerate(worker_threads):
-		worker_thread.start()
-		# print(f"  Started worker_id: {worker_id}")
+	# print_fn(f"[pipeline_data_generator PID {parent_pid}] Starting {len(worker_processes)} worker processes...", flush=True)
+	for p_idx, p in enumerate(worker_processes): 
+		p.start()
+		# print_fn(f"[pipeline_data_generator PID {parent_pid}] Started worker process {p_idx} (PID: {p.pid if p.pid else 'N/A - not started?'})", flush=True)
 
-	return (main_ctrl, generator)
+	# print_fn(f"[pipeline_data_generator PID {parent_pid}] Starting {len(batcher_processes)} batcher processes...", flush=True)
+	for p_idx, p in enumerate(batcher_processes): 
+		p.start()
+		# print_fn(f"[pipeline_data_generator PID {parent_pid}] Started batcher process {p_idx} (PID: {p.pid if p.pid else 'N/A - not started?'})", flush=True)
+
+	# print_fn(f"[pipeline_data_generator PID {parent_pid}] Starting datagen_thread...", flush=True)
+	datagen_thread.start()
+	# print_fn(f"[pipeline_data_generator PID {parent_pid}] All processes/threads started.", flush=True)
 
 
+	def _final_generator():
+		print_gen_final = print 
+		shutdown_initiated_by_generator = False
+		# print_gen_final(f"[_final_generator PID {os.getpid()}] Generator created. Waiting for data...", flush=True)
+		try:
+			while True: 
+				try:
+					batch = output_q_for_generator.get(timeout=1.0) 
+				except local_queue.Empty: 
+					if datagen_stop_event.is_set(): 
+						# print_gen_final(f"[_final_generator PID {os.getpid()}] datagen_stop_event IS SET during timeout. Breaking.", flush=True)
+						shutdown_initiated_by_generator = True; break 
+					if datagen_thread and not datagen_thread.is_alive():
+						# print_gen_final(f"[_final_generator PID {os.getpid()}] datagen_thread NOT ALIVE during timeout. Breaking.", flush=True)
+						shutdown_initiated_by_generator = True; break
+					continue 
 
-#
-# Provide your text data to the Worker
-#
-def _my_text_source():
-	"""
-	Example text generator. Replace with real data or Hugging Face splits, etc.
-	This yields lines or documents repeatedly.
-	"""
-	# texts = [
-	# 	"Hello world. This is sample #1.",
-	# 	"Pipeline demonstration line #2.",
-	# 	"Third line with some example text.",
-	# 	"Another line for autoencoding or copying objective."
-	# ]
-	# while True:
-	# 	for t in texts:
-	# 		yield t
-			
-	"""
-	A generator of text for demonstration.
-	This uses "roneneldan/TinyStories" on HuggingFace for example data.
-	Replace with your own source if desired.
-	"""
-	ds = load_dataset("roneneldan/TinyStories", split="train")
-	while True:
-		for x in ds:
-			yield x["text"]
-	# while True:
-	# 	# x = "abcdefghijklmnopqrstuvwxyz"
-	# 	yield '''ant bird cat dog eel fox gat hen iggy jay koi lion mole new owl PIG quail rat sow tan uwu vole wolf xxx yam zebu '''
-	# 	# x = "0123456789"
-	# 	# yield ' '.join(x)
-	# 	# yield "0 1 2 3 " * 10
-	# 	# yield "0 1 2 3 4 5 6 7 8 9 " * 10
+				if datagen_stop_event.is_set() and batch is None: 
+					# print_gen_final(f"[_final_generator PID {os.getpid()}] Stop event set and batch is None or queue was empty. Breaking.", flush=True)
+					shutdown_initiated_by_generator = True; break
+
+				if batch is None: 
+					# print_gen_final(f"[_final_generator PID {os.getpid()}] Received None sentinel from output_q. Ending.", flush=True)
+					shutdown_initiated_by_generator = True; break 
+				yield batch
+				output_q_for_generator.task_done() 
+		except Exception as e: 
+			print_gen_final(f"[pipeline_data_generator PID {os.getpid()}] Exception in _final_generator: {e}", flush=True) # Keep error log
+			traceback.print_exc(file=sys.stdout); sys.stdout.flush()
+			shutdown_initiated_by_generator = True 
+		finally:
+			# print_gen_final(f"[_final_generator PID {os.getpid()}] Entering finally. Shutdown by gen: {shutdown_initiated_by_generator}, datagen_stop: {datagen_stop_event.is_set()}, batcher_stop: {batcher_stop_event.is_set()}", flush=True)
+			if shutdown_initiated_by_generator: 
+				if datagen_stop_event and not datagen_stop_event.is_set(): 
+					# print_gen_final(f"[_final_generator PID {os.getpid()}] Setting datagen_stop_event in finally.", flush=True)
+					datagen_stop_event.set() 
+				if batcher_stop_event and not batcher_stop_event.is_set(): 
+					# print_gen_final(f"[_final_generator PID {os.getpid()}] Setting batcher_stop_event in finally.", flush=True)
+					batcher_stop_event.set() 
+			# print_gen_final(f"[_final_generator PID {os.getpid()}] Exiting.", flush=True)
+	
+	return main_ctrl, _final_generator(), datagen_thread, batcher_stop_event, datagen_stop_event

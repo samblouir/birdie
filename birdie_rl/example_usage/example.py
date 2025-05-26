@@ -20,20 +20,18 @@ import utils
 
 # Create a configuration dictionary for Birdie and training
 config = {
-	## Birdie uses these these functions and configs.
-	## Please see ul2_config.py and utils.py for more details.
-	"reward_fn": utils.reward_fn,
-	"ds": utils.data_generator,
-	"objectives": ul2_config,
-	"tokenizer": tiktoken.get_encoding("o200k_base"),
-
-	
-	"batch_size": 8,
-	"sequence_length": 2048,
-	"num_workers": 16,
-	"steps_between_evaluations": 32,
-	"num_steps": 4096,
-	"accelerator": accelerate.Accelerator(),
+    ## Birdie uses these these functions and configs.
+    ## Please see ul2_config.py and utils.py for more details.
+    "reward_fn": utils.reward_fn,
+    "ds": utils.data_generator,
+    "objectives": ul2_config,
+    "tokenizer": tiktoken.get_encoding("o200k_base"),
+    "batch_size": 2,
+    "sequence_length": 512,
+    "num_workers": 1,
+    "steps_between_evaluations": 32,
+    "num_steps": 256,
+    "accelerator": accelerate.Accelerator(),
 }
 
 # Instantiate the Birdie object using our configuration
@@ -51,50 +49,49 @@ progress_bar = tqdm(total=config["num_steps"], desc="Training")
 
 # Main training loop
 for step_idx in range(config["num_steps"]):
-	# Update progress bar by one step
-	progress_bar.update(1)
+    # Update progress bar by one step
+    progress_bar.update(1)
 
-	# Retrieve the next sample (batch) from Birdie
-	train_batch = birdie.get_next_training_sample()
-	
-	show_batch_stats = False
+    # Retrieve the next sample (batch) from Birdie
+    train_batch = birdie.get_next_training_sample()
 
-	if show_batch_stats:
+    show_batch_stats = False
 
-		# Count how many input_ids are non-zero (used) vs. zero (wasted/padding)
-		used_iids = torch.where(train_batch["input_ids"] == 0, 0, 1).sum().item()
-		wasted_iids = torch.where(train_batch["input_ids"] == 0, 1, 0).sum().item()
+    if show_batch_stats:
+        # Count how many input_ids are non-zero (used) vs. zero (wasted/padding)
+        used_iids = torch.where(train_batch["input_ids"] == 0, 0, 1).sum().item()
+        wasted_iids = torch.where(train_batch["input_ids"] == 0, 1, 0).sum().item()
 
-		# Track the maximum token IDs in both inputs and labels
-		max_input_ids = (train_batch["input_ids"]).max().item()
-		max_label_ids = (train_batch["label_ids"]).max().item()
+        # Track the maximum token IDs in both inputs and labels
+        max_input_ids = (train_batch["input_ids"]).max().item()
+        max_label_ids = (train_batch["label_ids"]).max().item()
 
-		# Compute the packer efficiency as the ratio of used tokens
-		packer_efficiency = 1 - (wasted_iids / (wasted_iids + used_iids))
+        # Compute the packer efficiency as the ratio of used tokens
+        packer_efficiency = 1 - (wasted_iids / (wasted_iids + used_iids))
 
-		_results = [
-		    f"max_input_ids: {max_input_ids}, "
-		    f"max_label_ids: {max_label_ids}, "
-		    f"wasted_iids: {wasted_iids}, "
-		    f"used_iids: {used_iids}, "
-		    f"packer_efficiency: {packer_efficiency:.2%}"
-		]
-		print('\n'.join(_results))
+        _results = [
+            f"max_input_ids: {max_input_ids}, "
+            f"max_label_ids: {max_label_ids}, "
+            f"wasted_iids: {wasted_iids}, "
+            f"used_iids: {used_iids}, "
+            f"packer_efficiency: {packer_efficiency:.2%}"
+        ]
+        print("\n".join(_results))
 
-	# Check if it's time to run a validation pass
-	if birdie.time_for_eval(step_idx):
-		# Measure validation losses for each objective
-		for (objective_name, batch) in birdie.measure_validation_losses():
-			# Here we simulate a loss using a random number 
-			# (replace with a real model forward pass in practice)
-			loss = seeded_np_rng.random()
+    # Check if it's time to run a validation pass
+    if birdie.time_for_eval(step_idx):
+        # Measure validation losses for each objective
+        for objective_name, batch in birdie.measure_validation_losses():
+            
+            # (Replace this with a real loss for the batch)
+            loss = seeded_np_rng.random()
 
-			# Log this "loss" in Birdie
-			birdie.log_validation_loss(key=objective_name, loss=loss, step_idx=step_idx)
+            # Send the loss to Birdie
+            birdie.log_validation_loss(key=objective_name, loss=loss, step_idx=step_idx)
 
-		# Get a detailed string representation of the current action
-		(status_dict, status_str) = birdie.get_verbose_action()
-		print(status_str)
+        # Get a detailed string representation of the current action
+        (status_dict, status_str) = birdie.get_verbose_action()
+        print(f"  status_str: \n{status_str}\n")
 
 # Show that we are done
 print("\n" * 3, end="")

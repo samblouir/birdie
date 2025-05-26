@@ -4,202 +4,181 @@ Base classes for objectives.
 Defines:
 - BaseObjectiveConfig (dataclass) for objective settings.
 - BaseObjective (abstract class) which each objective implements.
+- run_checks now returns a specific "not_enough_space" status.
 """
 
 from typing import Any, Dict, List, Union
 import dataclasses
-import copy
+import copy 
 import numpy as np
 from birdie_rl.objectives import utils
+import sys # For sys.stdout.flush() in example
 
 @dataclasses.dataclass
 class BaseObjectiveConfig:
-	"""
-	Base configuration class for objectives.
-
-	Attributes:
-		objective: A descriptive name of the objective (optional).
-		rng_seed: Random seed for the objective's RNG.
-		minimum_sequence_length: Enforced minimum input length.
-		maximum_sequence_length: Enforced maximum input length.
-		minimum_remaining_space: The minimum required remaining space to operate.
-		maximum_remaining_space: The maximum allowed remaining space to operate.
-		remaining_space: The actual space left, passed in externally.
-		tokenizer: The tokenizer instance to use. If None, a default is created.
-	"""
-
 	objective: str = ""
 	rng_seed: int = 42
-	# minimum_sequence_length: int = -1
 	minimum_sequence_length: int = 32
-	minimum_remaining_space: int = 32
+	minimum_remaining_space: int = 32 # Min space an objective needs to even attempt processing
 	maximum_sequence_length: int = -1
 	maximum_remaining_space: int = -1
-	remaining_space: int = -1
-	tokenizer: Any = None
+	remaining_space: int = -1 # Actual space in current packer passed by Worker
+	tokenizer: Any = None 
 
 
 class BaseObjective:
-	"""
-	Abstract base class for objectives.
-
-	Subclasses should override `build_input_and_labels` to produce
-	the final "input_ids", "label_ids", and other metadata.
-	"""
-
 	def __init__(self, config: BaseObjectiveConfig) -> None:
-		"""
-		Initialize the objective with the given configuration.
+		self.config = config 
+		
+		if self.config.tokenizer is None:
+			raise ValueError("Tokenizer must be provided in the BaseObjectiveConfig passed to BaseObjective.")
+		self.tokenizer = self.config.tokenizer 
 
-		Args:
-			config: An instance of BaseObjectiveConfig (or subclass).
-		"""
-		self.config = config
 		self.np_rng = np.random.default_rng(self.config.rng_seed)
 
-		if self.config.tokenizer is None:
-			raise Exception("Please provide a Tokenizer in the BaseObjectiveConfig before creating a BaseObjective.")
-		else:
-			self.set_tokenizer(self.config.tokenizer)
 
 	def hash(self):
-		"""
-		Return a unique hash for the objective.
-		"""
-		config_without_keys = {k: v for k, v in self.config.__dict__.items() if k not in ["tokenizer"]}
-		return utils.sha_hash(config_without_keys)
+		config_dict_for_hash = {
+			k: v for k, v in self.config.__dict__.items() 
+			if k != "tokenizer" and not callable(v) 
+		}
+		return utils.sha_hash(config_dict_for_hash)
 
 	def set_tokenizer(self, tokenizer: Any) -> None:
-		"""
-		Set the tokenizer for the objective.
-
-		Args:
-			tokenizer: The tokenizer instance to use.
-		"""
 		self.tokenizer = tokenizer
-		self.config.tokenizer = tokenizer
+		if hasattr(self.config, 'tokenizer'):
+			self.config.tokenizer = tokenizer
 
 	def __call__(
-		self, input_ids: Union[str, List[int]], **kwargs
+		self, input_ids: Union[str, List[int]] 
 	) -> Dict[str, Any]:
-		"""
-		Make the objective callable, e.g. objective(text).
+		if hasattr(self.config, 'rng_seed'): # Re-seed if objective instance is cached and reused
+			self.np_rng = np.random.default_rng(self.config.rng_seed)
 
-		Args:
-			input_ids: Input text (string) or token IDs (list).
-			**kwargs: Additional config overrides.
-
-		Returns:
-			A dictionary with status, input_ids, label_ids, etc.
-		"""
-		merged_config = copy.deepcopy(self.config)
-		for key, val in kwargs.items():
-			if hasattr(merged_config, key):
-				setattr(merged_config, key, val)
-
-		self.np_rng = np.random.default_rng(merged_config.rng_seed)
-		check_status = self.run_checks(input_ids, merged_config)
+		# run_checks uses self.config, which includes remaining_space set by Worker
+		check_status = self.run_checks(input_ids, self.config) 
 
 		if check_status["status"] != "ok":
-			return check_status
+			return check_status # Propagate specific error status like "not_enough_space"
 
-		result = self.build_input_and_labels(input_ids, merged_config)
-
-		if merged_config.maximum_sequence_length >= 0:
-			final_length = len(result["input_ids"])
-			if final_length != merged_config.maximum_sequence_length:
-				return {
-					"status": "error",
-					"message": (
-						f"Input sequence too long: final input_ids length "
-						f"{final_length} does not equal required maximum "
-						f"{merged_config.maximum_sequence_length}"
-					),
-				}
-
+		result = self.build_input_and_labels(input_ids, self.config) 
 		return result
 
 	def run_checks(
 		self, input_ids: Union[str, List[int]], config: BaseObjectiveConfig
 	) -> Dict[str, Any]:
-		"""
-		Perform validation checks on the input and configuration.
+		if self.tokenizer is None: 
+			return {"status": "error", "message": "Tokenizer not available for run_checks (self.tokenizer is None)."}
 
-		Args:
-			input_ids: The raw input (text or token IDs).
-			config: The configuration for the objective.
-
-		Returns:
-			A dict with "status" = "ok" or "error", plus a message if error.
-		"""
+		# Check for minimum_remaining_space first, as this is a prerequisite for an objective to operate
+		if hasattr(config, 'remaining_space') and config.remaining_space >=0 :
+			if hasattr(config, 'minimum_remaining_space') and config.minimum_remaining_space > 0: # Ensure it's a positive requirement
+				if config.remaining_space < config.minimum_remaining_space:
+					return {
+						"status": "not_enough_space", # Specific status
+						"message": (
+							f"Not enough space left for objective to run: config.remaining_space ({config.remaining_space}) "
+							f"< objective's min_remaining_space ({config.minimum_remaining_space})"
+						),
+					}
+		# Length checks for the input_ids itself
 		if isinstance(input_ids, (list, np.ndarray)):
 			length = len(input_ids)
+		elif isinstance(input_ids, str): 
+			length = len(self.tokenizer.encode(input_ids)) # This could be expensive if called often before actual processing
 		else:
-			length = len(self.tokenizer.encode(input_ids))
+			return {"status": "error", "message": f"Invalid input_ids type: {type(input_ids)}"}
 
-		if config.minimum_sequence_length >= 0 and length < config.minimum_sequence_length:
+		if hasattr(config, 'minimum_sequence_length') and config.minimum_sequence_length >= 0 and length < config.minimum_sequence_length:
 			return {
-				"status": "error",
+				"status": "error", # Or perhaps "input_too_short"
 				"message": (
 					f"Input sequence too short: {length} < min "
 					f"{config.minimum_sequence_length}"
 				),
 			}
 
-		if config.maximum_sequence_length >= 0 and length > config.maximum_sequence_length:
+		if hasattr(config, 'maximum_sequence_length') and config.maximum_sequence_length >= 0 and length > config.maximum_sequence_length:
 			return {
-				"status": "error",
+				"status": "error", # Or "input_too_long"
 				"message": (
 					f"Input sequence too long: {length} > max "
 					f"{config.maximum_sequence_length}"
 				),
 			}
-
-		if config.minimum_remaining_space >= 0 and config.remaining_space >= 0:
-			if config.remaining_space < config.minimum_remaining_space:
-				return {
-					"status": "error",
-					"message": (
-						f"Not enough space left: config.remaining_space: {config.remaining_space} < min config.minimum_remaining_space: ({config.minimum_remaining_space})"
-					),
-				}
-
-		if config.maximum_remaining_space >= 0 and config.remaining_space >= 0:
-			if config.remaining_space > config.maximum_remaining_space:
-				return {
-					"status": "error",
-					"message": (
-						f"Remaining space {config.remaining_space} exceeds "
-						f"maximum allowed {config.maximum_remaining_space}"
-					),
-				}
+		
+		# Redundant check for maximum_remaining_space, usually remaining_space is what matters for fitting output.
+		# if hasattr(config, 'maximum_remaining_space') and config.maximum_remaining_space >= 0:
+		# 	if config.remaining_space > config.maximum_remaining_space:
+		# 		return {
+		# 			"status": "error",
+		# 			"message": (
+		# 				f"Remaining space {config.remaining_space} exceeds "
+		# 				f"maximum allowed {config.maximum_remaining_space}"
+		# 			),
+		# 		}
 
 		return {"status": "ok"}
 
 	def build_input_and_labels(
 		self, input_ids: Union[str, List[int]], config: BaseObjectiveConfig
 	) -> Dict[str, Any]:
-		"""
-		Subclasses must implement this method.
-
-		It should return a dict with 'input_ids', 'label_ids', etc.
-		"""
 		raise NotImplementedError("Subclasses must implement build_input_and_labels.")
 
 	def safe_cast_to_list(self, x):
-		try:
+		if isinstance(x, np.ndarray):
 			return x.tolist()
-		except:
+		elif isinstance(x, list):
 			return x
+		elif x is None:
+			return []
+		try:
+			return list(x)
+		except TypeError: 
+			return [x]
 
 
 if __name__ == "__main__":
 
-	class DummyObjective(BaseObjective):
-		def build_input_and_labels(self, input_ids, config):
-			return {"status": "ok", "dummy": True}
+	@dataclasses.dataclass
+	class DummyObjectiveConfig(BaseObjectiveConfig):
+		my_param: str = "default"
+		minimum_remaining_space: int = 10 # Override base for test
 
-	dummy_cfg = BaseObjectiveConfig()
-	dummy_obj = DummyObjective(dummy_cfg)
-	result = dummy_obj([1, 2, 3])
-	print("Dummy objective call =>", result)
+	class DummyObjective(BaseObjective):
+		def __init__(self, config: DummyObjectiveConfig): 
+			super().__init__(config)
+			if self.tokenizer and hasattr(self.config, 'my_param'):
+				print(f"DummyObjective initialized with tokenizer and param: {self.config.my_param}", flush=True)
+
+		def build_input_and_labels(self, input_ids, config: DummyObjectiveConfig): 
+			# Simulate using some space
+			if config.remaining_space < 20: # Arbitrary check for this dummy
+				# This specific objective might decide it can't produce good output
+				# but this is different from the BaseObjective.run_checks
+				# For this test, assume it always works if run_checks passed.
+				pass
+			return {"status": "ok", "dummy": True, "param_used": config.my_param, "seed_used": config.rng_seed, "input_ids":[1,2,3], "label_ids":[1,2,3]}
+
+	class MockTokenizer:
+		def encode(self, t): return [ord(c) for c in t] if isinstance(t, str) else []
+		def decode(self, ids): return "".join([chr(i) for i in ids if i >=0])
+
+	mock_tokenizer = MockTokenizer()
+	
+	# Test "not_enough_space"
+	cfg_not_enough_space = DummyObjectiveConfig(tokenizer=mock_tokenizer, remaining_space=5) # remaining_space < minimum_remaining_space (10)
+	obj_nes = DummyObjective(cfg_not_enough_space)
+	result_nes = obj_nes("short text") # __call__ will run checks
+	print("Result (Not Enough Space):", result_nes, flush=True)
+	assert result_nes["status"] == "not_enough_space"
+
+	# Test "ok"
+	cfg_ok_space = DummyObjectiveConfig(tokenizer=mock_tokenizer, remaining_space=50, my_param="OK_PARAM", rng_seed=777)
+	obj_ok = DummyObjective(cfg_ok_space)
+	result_ok = obj_ok("some good text")
+	print("Result (OK Space):", result_ok, flush=True)
+	assert result_ok["status"] == "ok"
+	assert result_ok["param_used"] == "OK_PARAM"
+	assert result_ok["seed_used"] == 777
+

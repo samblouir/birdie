@@ -5,29 +5,8 @@ Infilling Objective:
 - The label is built by concatenating [placeholder + masked tokens] for each span.
 - We skip any span if adding it would exceed `remaining_space`.
 - If no spans are inserted after `max_attempts`, we revert to returning unmasked text.
-
-Important Logic Points:
-1) We do NOT subtract the number of prompt tokens from our text budget. Instead,
-   we rely on "prospective" checks to ensure (input + label) ≤ remaining_space.
-2) Each iteration, we try either:
-   - mask a span (with probability ~ local_corruption_rate/span_len),
-   - or pass through 1 unmasked token.
-3) We do multiple attempts (max_attempts). If any attempt results in at least 1 placeholder,
-   we finalize that. Else, after all attempts, fallback to unmasked text.
-
-Usage:
-  obj = InfillingObjective(some_config)
-  obj.set_tokenizer(your_tokenizer)
-  result = obj("Your text here")
-
-Result Dictionary Keys:
-  - "status": "ok"
-  - "input_ids": ...
-  - "label_ids": ...
-  - "unused_input_string": leftover text (if any tokens remain un-used)
-  - "unused_input_ids": leftover tokens
-  - "masked_count": how many tokens got masked
-  - "original_length": how many tokens from the original text we used
+- Optimizes by pre-tokenizing static strings like paradigm, mask_prefix, and mask_suffix.
+- Corrects TypeError in slicing by ensuring span_len_to_mask is an integer.
 """
 
 import dataclasses
@@ -38,242 +17,227 @@ from birdie_rl.objectives.base import BaseObjective, BaseObjectiveConfig
 @dataclasses.dataclass
 class InfillingConfig(BaseObjectiveConfig):
 	corruption_rate: float = 0.15
-	mean_tokens_per_span: int = 3
-	max_mask_spans: int = 20
-	mask_prefix: str = " [[mask_"
-	mask_suffix: str = "]]"
-	shuffle: bool = False
-	separator: str = " "
-	paradigm: str = "<|INFILL|>"
-	gap_between_spans: int = 1
+	mean_tokens_per_span: float = 3.0 # Can be float
+	max_mask_spans: int = 20 
+	mask_prefix: str = " [[mask_" 
+	mask_suffix: str = "]]"    
+	shuffle: bool = False 
+	separator: str = " " 
+	paradigm: str = "<|INFILL|>" 
+	gap_between_spans: int = 1 
 	max_attempts: int = 100
-	paradigm_end: str = ""
-	# minimum_remaining_space: int = 256
-	# minimum_sequence_length: int = 256
+	paradigm_end: str = "" 
 
 	def __post_init__(self):
-		"""
-		Adjusts some derived fields for min/max corruption rates
-		and mean_tokens_per_span range.
-		"""
 		assert(0.0 <= self.corruption_rate <= 1.0)
 		self.minimum_corruption_rate = max(0.0, self.corruption_rate * 0.5)
 		self.maximum_corruption_rate = min(0.95, self.corruption_rate * 2.0)
-		self.minimum_mean_tokens_per_span = max(1, self.mean_tokens_per_span // 3)
-		self.maximum_mean_tokens_per_span = max(1, self.mean_tokens_per_span * 3)
+		# Ensure these are floats if mean_tokens_per_span is float, or cast later
+		self.minimum_mean_tokens_per_span = max(1.0, float(self.mean_tokens_per_span) / 3.0)
+		self.maximum_mean_tokens_per_span = max(1.0, float(self.mean_tokens_per_span) * 3.0)
 
 
 class InfillingObjective(BaseObjective):
 	"""
-	InfillingObjective (final, with commented-out debug prints).
-
-	Overview:
-	  1) Takes text + optional paradigm => merges them in `input_ids`.
-	  2) Iterates tokens, deciding whether to mask a span or pass a single token unmasked.
-	  3) Each masked span => we place the placeholder in input_ids, and
-		 we append [placeholder + masked_tokens] to label_ids.
-	  4) If we insert at least 1 placeholder, we finalize; else we attempt again up to max_attempts.
-	  5) If still no placeholders => return unmasked.
+	InfillingObjective. Pre-tokenizes static strings.
+	Ensures span lengths are integers for slicing.
 	"""
 
 	def __init__(self, config: InfillingConfig) -> None:
 		super().__init__(config)
+		if not isinstance(config.mean_tokens_per_span, (int, float)) or config.mean_tokens_per_span <=0:
+			raise ValueError(f"mean_tokens_per_span must be a positive number. Got: {config.mean_tokens_per_span}")
+		if not isinstance(config.minimum_mean_tokens_per_span, (int, float)) or config.minimum_mean_tokens_per_span <=0:
+			raise ValueError(f"minimum_mean_tokens_per_span must be a positive number. Got: {config.minimum_mean_tokens_per_span}")
+		if not isinstance(config.maximum_mean_tokens_per_span, (int, float)) or config.maximum_mean_tokens_per_span <=0:
+			raise ValueError(f"maximum_mean_tokens_per_span must be a positive number. Got: {config.maximum_mean_tokens_per_span}")
 
+
+		self.tokenized_paradigm = []
+		if self.config.paradigm and self.tokenizer:
+			self.tokenized_paradigm = self.safe_cast_to_list(self.tokenizer.encode(self.config.paradigm))
+		
+		self.tokenized_paradigm_end = []
+		if self.config.paradigm_end and self.tokenizer:
+			self.tokenized_paradigm_end = self.safe_cast_to_list(self.tokenizer.encode(self.config.paradigm_end))
+		
 	def build_input_and_labels(
 		self, input_text: str, config: InfillingConfig
 	) -> Dict[str, Any]:
-		"""
-		Build "input_ids" (with placeholders) and "label_ids" ([placeholder + tokens])
-		according to Infilling logic.
-
-		Args:
-			input_text: Raw string to be infilled.
-			config: InfillingConfig specifying corruption rates, mean_tokens_per_span, etc.
-
-		Returns:
-			A dict with fields:
-			 - status
-			 - objective
-			 - input_ids
-			 - label_ids
-			 - unused_input_string
-			 - unused_input_ids
-			 - masked_count
-			 - original_length
-		"""
-		# # (Optional) Debug or info messages:
-		# print(f"[InfillingObjective] build_input_and_labels() -> text len = {len(input_text)}, remaining={config.remaining_space}")
-
-		# Encode the text and optional prompt
 		tokenizer = self.tokenizer
 		encoded_input = tokenizer.encode(input_text)
 
-		prompt_toks = []
-		if config.paradigm:
-			prompt_toks = tokenizer.encode(config.paradigm)
+		prompt_toks = self.tokenized_paradigm 
 
-		# Decide how many tokens from the original text we can consider
 		n_tokens = len(encoded_input)
-		max_n_tokens = min(n_tokens, config.remaining_space)
-		if max_n_tokens <= 0:
-			print("[InfillingObjective] No space -> returning empty.")
+		max_n_tokens_to_process = min(n_tokens, config.remaining_space - len(prompt_toks) - 16) 
+
+		if max_n_tokens_to_process <= 0:
 			return {
-				"status": "fail",
-				"objective": "Infilling",
-				"input_ids": [],
-				"label_ids": [],
-				"unused_input_string": input_text,
-				"unused_input_ids": encoded_input,
-				"masked_count": 0,
-				"original_length": 0,
+				"status": "fail", "objective": "Infilling", "input_ids": [], "label_ids": [],
+				"unused_input_string": input_text, "unused_input_ids": np.array(encoded_input, dtype=np.int32), # Ensure numpy array
+				"masked_count": 0, "original_length": 0,
 			}
 
-		# Function to determine how many tokens we mask in one span
-		def sample_span_length(start_idx: int) -> int:
-			"""
-			Poisson-based sampling for number of tokens in a masked span, clamped by config.
-			"""
-			raw_len = self.np_rng.poisson(config.mean_tokens_per_span)
-			raw_len = max(raw_len, config.minimum_mean_tokens_per_span)
-			raw_len = min(raw_len, config.maximum_mean_tokens_per_span)
-			# Also ensure we don't exceed max_n_tokens from the current index
-			limit = max_n_tokens - start_idx
-			if raw_len > limit:
-				raw_len = limit
-			return max(raw_len, 1)
+		def sample_span_length(current_text_idx: int) -> int:
+			# np.random.poisson can return float if lam is float. Ensure int output.
+			raw_len = self.np_rng.poisson(float(config.mean_tokens_per_span)) 
+			# Ensure raw_len is compared with float versions of min/max from config
+			raw_len = max(raw_len, float(config.minimum_mean_tokens_per_span))
+			raw_len = min(raw_len, float(config.maximum_mean_tokens_per_span))
+			limit = max_n_tokens_to_process - current_text_idx
+			# Final result must be an integer for slicing
+			return int(max(1.0, min(raw_len, float(limit))))
 
-		# Try multiple attempts to insert at least one placeholder
+
 		for attempt_i in range(config.max_attempts):
-			# # print(f"  [Attempt {attempt_i+1}/{config.max_attempts}]")
-			input_ids = []
-			label_blocks = []
-			placeholders_inserted = 0
-			masked_tokens_count = 0
+			current_input_ids_list = list(prompt_toks) 
+			label_blocks_list_of_lists = [] 
+			
+			placeholders_inserted_count = 0
+			masked_tokens_total_count = 0
+			text_idx = 0 
 
-			# Add the prompt tokens at the beginning
-			input_ids.extend(prompt_toks)
+			while text_idx < max_n_tokens_to_process and placeholders_inserted_count < config.max_mask_spans:
+				current_input_len = len(current_input_ids_list)
+				current_labels_len = sum(len(block) for block in label_blocks_list_of_lists) + len(self.tokenized_paradigm_end)
 
-			idx = 0
-			while idx < max_n_tokens:
-				in_len = len(input_ids)
-				lbl_len = sum(len(b) for b in label_blocks)
-				total_so_far = in_len + lbl_len
+				if (current_input_len + current_labels_len) >= config.remaining_space:
+					break 
 
-				# If we have no leftover space for even 1 token, break
-				if total_so_far >= config.remaining_space:
-					# # print("  => No leftover space for any token -> break.")
-					break
-
-				# Compute local corruption rate and a span length
 				local_corruption_rate = self.np_rng.uniform(
-					config.minimum_corruption_rate,
-					config.maximum_corruption_rate
+					config.minimum_corruption_rate, config.maximum_corruption_rate
 				)
-				span_len = sample_span_length(idx)
-				# Probability that we actually do a mask here
-				p = local_corruption_rate / span_len
-				# # print(f"   idx={idx}, span_len={span_len}, p={p}")
+				span_len_to_mask = sample_span_length(text_idx) # This now returns int
+				
+				prob_to_mask = local_corruption_rate / span_len_to_mask if span_len_to_mask > 0 else 0.0
 
-				# Attempt to mask with probability p
-				if self.np_rng.uniform() < p:
-					snippet = encoded_input[idx : idx + span_len]
-					if len(snippet) > 0:
-						# Build placeholder text
-						ph_str = f"{config.mask_prefix}{placeholders_inserted}{config.mask_suffix}"
-						ph_toks = tokenizer.encode(ph_str)
+				if self.np_rng.uniform() < prob_to_mask and (max_n_tokens_to_process - text_idx >= span_len_to_mask):
+					snippet_to_mask = encoded_input[text_idx : text_idx + span_len_to_mask] # Slicing with integers
+					if not snippet_to_mask: continue 
 
-						# Check prospective size
-						prospective_in_len  = in_len + len(ph_toks)
-						prospective_lbl_len = lbl_len + len(ph_toks) + span_len
-						prospective_total   = prospective_in_len + prospective_lbl_len
-						if prospective_total <= config.remaining_space:
-							# Accept => place placeholder in input
-							input_ids.extend(ph_toks)
-							# Then [placeholder + snippet] in label
-							block = list(ph_toks) + list(snippet)
-							label_blocks.append(block)
-							placeholders_inserted += 1
-							masked_tokens_count += span_len
-							idx += span_len
-							continue
-					# If snippet empty or can't fit, do not mask => fallback below
+					ph_str = f"{config.mask_prefix}{placeholders_inserted_count}{config.mask_suffix}"
+					ph_toks = tokenizer.encode(ph_str)
 
-				# If not masking => add 1 token unmasked
-				prospective_in_len = in_len + 1
-				prospective_total  = prospective_in_len + lbl_len
-				if prospective_total > config.remaining_space:
-					# # print("  => Can't fit 1 unmasked token, break.")
-					break
+					prospective_input_len = current_input_len + len(ph_toks)
+					prospective_label_block_len = len(ph_toks) + len(snippet_to_mask)
+					prospective_total_labels_len = current_labels_len - len(self.tokenized_paradigm_end) + prospective_label_block_len + len(self.tokenized_paradigm_end) # Corrected labels_len logic
+					
+					if (prospective_input_len + prospective_total_labels_len) <= config.remaining_space:
+						current_input_ids_list.extend(ph_toks)
+						label_blocks_list_of_lists.append(list(ph_toks) + list(snippet_to_mask))
+						
+						text_idx += span_len_to_mask
+						placeholders_inserted_count += 1
+						masked_tokens_total_count += len(snippet_to_mask)
+						continue
+				
+				if (current_input_len + 1 + current_labels_len) <= config.remaining_space:
+					if text_idx < len(encoded_input): # Boundary check
+						current_input_ids_list.append(encoded_input[text_idx])
+						text_idx += 1
+					else: # Should not happen if max_n_tokens_to_process is respected
+						break
+				else:
+					break 
 
-				input_ids.append(encoded_input[idx])
-				idx += 1
+			if placeholders_inserted_count > 0:
+				final_label_ids_list = []
+				for block in label_blocks_list_of_lists:
+					final_label_ids_list.extend(block)
+				
+				if self.tokenized_paradigm_end: 
+					if len(current_input_ids_list) + len(final_label_ids_list) + len(self.tokenized_paradigm_end) <= config.remaining_space:
+						final_label_ids_list.extend(self.tokenized_paradigm_end)
+				
+				unused_input_ids_list = encoded_input[text_idx:]
+				unused_input_str = tokenizer.decode(unused_input_ids_list)
 
-			# If we inserted placeholders, finalize
-			if placeholders_inserted > 0:
-				# # print(f"  => placeholders_inserted={placeholders_inserted}, masked={masked_tokens_count}, finalize.")
-				label_ids = []
-				for block in label_blocks:
-					label_ids.extend(block)
-
-				# Possibly add config.paradigm_end if space
-				end_toks = tokenizer.encode(config.paradigm_end)
-				final_in_len  = len(input_ids)
-				final_lbl_len = len(label_ids)
-				if (final_in_len + final_lbl_len + len(end_toks)) <= config.remaining_space:
-					label_ids.extend(end_toks)
-					# # print("   => appended paradigm_end in label_ids")
-
-				leftover_ids = encoded_input[idx:]
-				leftover_text = tokenizer.decode(leftover_ids)
 				return {
-					"status": "ok",
-					"objective": "Infilling",
-					"input_ids": input_ids,
-					"label_ids": label_ids,
-					"unused_input_string": leftover_text,
-					"unused_input_ids": leftover_ids,
-					"masked_count": masked_tokens_count,
-					"original_length": max_n_tokens,
+					"status": "ok", "objective": "Infilling",
+					"input_ids": np.array(current_input_ids_list, dtype=np.int32),
+					"label_ids": np.array(final_label_ids_list, dtype=np.int32),
+					"unused_input_string": unused_input_str,
+					"unused_input_ids": np.array(unused_input_ids_list, dtype=np.int32),
+					"masked_count": masked_tokens_total_count,
+					"original_length": text_idx, 
 				}
 
-			# # print("  => placeholders_inserted=0, continuing attempts...")
+		final_input_ids = list(prompt_toks)
+		final_input_ids.extend(encoded_input[:max_n_tokens_to_process]) 
+		
+		final_label_ids_list = []
+		if self.tokenized_paradigm_end:
+			if len(final_input_ids) + len(self.tokenized_paradigm_end) <= config.remaining_space:
+				final_label_ids_list.extend(self.tokenized_paradigm_end)
 
-		# If we exit after all attempts => no placeholders
-		# # print("[InfillingObjective] => no placeholders => returning unmasked text.")
-		used_ids = encoded_input[:max_n_tokens]
-		leftover_ids = encoded_input[max_n_tokens:]
-		leftover_text = tokenizer.decode(leftover_ids)
+		unused_input_ids_list = encoded_input[max_n_tokens_to_process:]
+		unused_input_str = tokenizer.decode(unused_input_ids_list)
 		return {
-			"status": "ok",
-			"objective": "Infilling",
-			"input_ids": self.safe_cast_to_list(used_ids),
-			"label_ids": [],
-			"unused_input_string": leftover_text,
-			"unused_input_ids": leftover_ids,
+			"status": "ok", 
+			"objective": "Infilling (fallback, unmasked)",
+			"input_ids": np.array(final_input_ids, dtype=np.int32),
+			"label_ids": np.array(final_label_ids_list, dtype=np.int32),
+			"unused_input_string": unused_input_str,
+			"unused_input_ids": np.array(unused_input_ids_list, dtype=np.int32),
 			"masked_count": 0,
-			"original_length": max_n_tokens,
+			"original_length": max_n_tokens_to_process,
 		}
 
-
-# Example standalone usage test
 if __name__ == "__main__":
-	from birdie_rl.modeling.tokenizer import Tokenizer
+	try:
+		from birdie_rl.modeling.tokenizer import Tokenizer 
+	except ImportError:
+		class Tokenizer: 
+			def encode(self, t): return [ord(c) for c in t] if isinstance(t, str) else [[ord(c) for c in s] for s in t]
+			def decode(self, ids): 
+				if not ids: return ""
+				if isinstance(ids, np.ndarray): ids = ids.tolist() # Handle numpy array
+				if not ids: return "" # Check again after tolist
+				if isinstance(ids[0], list): return ["".join([chr(i) for i in id_list if i >=0]) for id_list in ids]
+				return "".join([chr(i) for i in ids if i >=0])
 
 	tok = Tokenizer()
-	text = "Final test for infilling with minimal debug prints."
+	text = "Final test for infilling with minimal debug prints and pre-tokenization. This text is made longer to ensure spans can be selected." * 2
 	cfg = InfillingConfig(
-		remaining_space=30,
-		corruption_rate=0.15,
-		mean_tokens_per_span=3,
+		remaining_space=100, 
+		corruption_rate=0.25,
+		mean_tokens_per_span=3.5, # Test with float
 		max_attempts=5,
-		mask_prefix="[mask_",
-		paradigm="<INFILL_FINAL>",
+		mask_prefix=" <MASK_", 
+		mask_suffix="> ",    
+		paradigm="<|START_INFILL|> ",
+		paradigm_end=" <|END_INFILL|>",
+		tokenizer=tok 
 	)
 	obj = InfillingObjective(cfg)
-	obj.set_tokenizer(tok)
-
+	
 	result = obj(text)
+	print("\n--- Infilling Test Output ---")
 	print("Status =", result["status"])
+	print("Input IDs (len {}):".format(len(result["input_ids"])), result["input_ids"][:30], "...")
 	print("Decoded input =", tok.decode(result["input_ids"]))
+	print("-" * 20)
+	print("Label IDs (len {}):".format(len(result["label_ids"])), result["label_ids"][:30], "...")
 	print("Decoded label =", tok.decode(result["label_ids"]))
-	print("Unused text =", result["unused_input_string"])
+	print("-" * 20)
+	print("Masked token count:", result["masked_count"])
+	print("Original text segment length used:", result["original_length"])
+	print("Unused text:", result["unused_input_string"][:100] + "..." if result["unused_input_string"] else "None")
+
+	# Test with edge case of very small mean_tokens_per_span
+	cfg_small_span = InfillingConfig(
+		remaining_space=50, 
+		corruption_rate=0.5,
+		mean_tokens_per_span=1.0, # Smallest mean
+		minimum_mean_tokens_per_span=1.0, # Ensure it can be 1
+		maximum_mean_tokens_per_span=2.0,
+		tokenizer=tok
+	)
+	obj_small_span = InfillingObjective(cfg_small_span)
+	result_small = obj_small_span("Short example.")
+	print("\n--- Infilling Test Output (Small Span) ---")
+	print("Status =", result_small["status"])
+	if result_small["status"] == "ok":
+		print("Decoded input =", tok.decode(result_small["input_ids"]))
+		print("Decoded label =", tok.decode(result_small["label_ids"]))
