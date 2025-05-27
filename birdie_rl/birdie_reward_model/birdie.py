@@ -622,3 +622,38 @@ class Birdie:
 		formatted_ret_dict_str = json.dumps(ret_dict, indent=4, sort_keys=True)
 		return ret_dict, formatted_ret_dict_str
 
+
+if __name__ == "__main__":
+
+	def ds(*args, **kwargs):
+		"""
+		Simple example data generator that yields dummy data.
+		"""
+		return "Hello" * 10
+	
+	from transformers import AutoTokenizer
+	tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
+	
+	
+	# Example usage
+	from birdie_rl.example_usage.birdie_config import birdie_config
+	birdie = Birdie(config={
+		"batch_size": 4,
+		"sequence_length": 512,
+		"num_workers": 2,
+		"steps_between_evaluations": 100,
+		"total_steps": 1000,
+		"objectives": birdie_config,
+		"ds": ds,
+		"tokenizer": tokenizer,  # Replace with your tokenizer instance
+	})
+	
+	for step in range(birdie.total_steps):
+		if birdie.time_for_eval(step):
+			birdie.measure_validation_losses()
+			birdie._maybe_update_reward_model(current_training_step=step)
+		
+		sample = birdie.get_next_training_sample()
+		print(f"Step {step}: Sampled batch: {sample}")
+	
+	birdie.close()  # Ensure resources are cleaned up
