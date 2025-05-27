@@ -290,13 +290,15 @@ class Worker:
 				single_sample_data = {key: value[0] for key, value in packed_data_batch.items() if hasattr(value, 'ndim') and value.ndim > 0 and hasattr(value, 'shape') and value.shape[0] == 1}
 				if single_sample_data.get("input_ids", np.array([])).any(): 
 					item_to_send = {"worker_id": self.worker_id, "packed_data": single_sample_data, "objective_name": objective_name}
-					try: 
-						self.sample_queue.put(item_to_send, timeout=0.1) 
-					except queue.Full: 
-						pass
-						# self._log_print(f"WARNING: sample_queue full for '{objective_name}'. Item might be dropped.", verbosity_level=1)
-					except Exception as e_put: 
-						self._log_print(f"ERROR putting to sample_queue: {e_put}", verbosity_level=0); self.should_stop = True 
+					while True:
+						try: 
+							self.sample_queue.put(item_to_send, timeout=0.1) 
+							break
+						except queue.Full: 
+							pass
+							# self._log_print(f"WARNING: sample_queue full for '{objective_name}'. Item might be dropped.", verbosity_level=1)
+						except Exception as e_put: 
+							self._log_print(f"ERROR putting to sample_queue: {e_put}", verbosity_level=0); self.should_stop = True 
 
 	def run(self, profile: bool = False):
 		# self._log_print(f"run() method STARTED.", verbosity_level=1) 
@@ -344,20 +346,25 @@ class Worker:
 		except KeyboardInterrupt: 
 			self._log_print(f"KeyboardInterrupt caught in Worker.run() loop. Setting should_stop=True.", verbosity_level=0)
 			self.should_stop = True 
+
 		except Exception as e: 
 			self._log_print(f"Unhandled EXCEPTION in Worker.run() loop: {e}", verbosity_level=0)
 			traceback.print_exc(file=sys.stdout); sys.stdout.flush(); self.should_stop = True
+
 		finally: 
+
 			# self._log_print(f"Entering FINALLY block of run(). should_stop: {self.should_stop}", verbosity_level=1)
 			if profiler:
 				profiler.disable() # Disable profiler at the start of finally
 			# self._log_print(f"Calling self.close() from finally block.", verbosity_level=1)
+
 			try:
 				self.close() 
 				# self._log_print(f"self.close() completed in finally.", verbosity_level=1)
 			except Exception as e_close:
 				self._log_print(f"Exception during self.close() in finally: {e_close}", verbosity_level=0)
 				traceback.print_exc(file=sys.stdout); sys.stdout.flush()
+
 			# self._log_print(f"Attempting to put None sentinel on sample_queue in finally.", verbosity_level=1)
 			try:
 				self.sample_queue.put(None, timeout=1.0) 
@@ -367,7 +374,9 @@ class Worker:
 			except Exception as e_sq:
 				self._log_print(f"Error putting None sentinel in finally: {e_sq}", verbosity_level=0)
 				traceback.print_exc(file=sys.stdout); sys.stdout.flush()
+
 			# self._log_print(f"Printing final profile stats. Processed ~{samples_processed_in_this_run} samples during this run.", verbosity_level=1)
+
 			if profiler:
 				self._print_profile_stats(profiler) # Print stats once at the very end
 
