@@ -29,7 +29,7 @@ config = {
     "ds": utils.data_generator,
     "objectives": ul2_config, # Using UL2 config, ensure it has a reasonable number of objectives
     "tokenizer": tiktoken.get_encoding("o200k_base"),
-    "batch_size": 2,
+    "batch_size": 8,
     "sequence_length": 512,
     "num_workers": 1, # Keep low for simple examples to avoid overhead
     "steps_between_evaluations": STEPS_BETWEEN_EVALS,
@@ -67,6 +67,9 @@ progress_bar = tqdm(total=config["num_steps"], desc="Training")
 for step_idx in range(config["num_steps"]):
     progress_bar.update(1)
     train_batch = birdie.get_next_training_sample()
+    for train_batch_idx,(key,value) in enumerate(train_batch.items()):
+        print(f"  train_batch[{key}]: {value.shape}")
+        
     show_batch_stats = False 
 
     if show_batch_stats and train_batch.get("input_ids") is not None:
