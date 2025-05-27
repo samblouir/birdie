@@ -16,6 +16,7 @@ birdie_rl/birdie_reward_model/reward_model.py
 birdie_rl/birdie_reward_model/rotary.py
 birdie_rl/example_usage/base_model.py
 birdie_rl/example_usage/benchmark_dataloader.py
+birdie_rl/example_usage/birdie_config.py
 birdie_rl/example_usage/compress.py
 birdie_rl/example_usage/example.py
 birdie_rl/example_usage/ul2_config.py
@@ -33,6 +34,7 @@ birdie_rl/objectives/utils.py
 birdie_rl/pipeline/__init__.py
 birdie_rl/pipeline/main_controller.py
 birdie_rl/pipeline/packer_batcher.py
+birdie_rl/pipeline/packer_batcher2.py
 birdie_rl/pipeline/test_packer_batcher.py
 birdie_rl/pipeline/worker.py
 birdie_rl/tests/__init__.py

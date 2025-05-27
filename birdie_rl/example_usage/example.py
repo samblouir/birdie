@@ -15,6 +15,7 @@ import numpy as np
 import tiktoken
 import torch
 from ul2_config import dummy_config, ul2_config, ul2_decoder_config # Ensure ul2_config is appropriate
+from birdie_config import birdie_light_config 
 import utils
 
 # Define the number of steps for this example
@@ -27,10 +28,12 @@ config = {
     ## Please see ul2_config.py and utils.py for more details.
     "reward_fn": utils.reward_fn,
     "ds": utils.data_generator,
-    "objectives": ul2_config, # Using UL2 config, ensure it has a reasonable number of objectives
+    "objectives": birdie_light_config, # Using `birdie_light_config` instead of `ul2_config` for comprehensiveness
     "tokenizer": tiktoken.get_encoding("o200k_base"),
-    "batch_size": 8,
+    "batch_size": 128,
     "sequence_length": 512,
+    "minimum_sequence_length": 256,
+    "min_seq_len_for_packing": 256, # Minimum sequence length for packing
     "num_workers": 1, # Keep low for simple examples to avoid overhead
     "steps_between_evaluations": STEPS_BETWEEN_EVALS,
     "num_steps": NUM_EXAMPLE_STEPS, # Total steps for this example run

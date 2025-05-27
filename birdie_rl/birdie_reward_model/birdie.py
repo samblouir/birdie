@@ -125,6 +125,9 @@ class Birdie:
 			config = {}
 
 		self.config = config
+		config['min_seq_len_for_packing'] = config.get("min_seq_len_for_packing", config.get("minimum_sequence_length", 256))
+		assert( config['min_seq_len_for_packing'] < config['sequence_length'] )
+
 		self.accelerator = config.get("accelerator", None)
 		self.print_fn = self.accelerator.print if self.accelerator else print
 		
