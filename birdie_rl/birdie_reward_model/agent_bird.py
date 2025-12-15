@@ -392,8 +392,30 @@ class AgentBird:
 		# Merge any user-provided kwargs with the class defaults
 		self.__dict__.update(kwargs)
 
+		# Default device
+		if self.device is None:
+			self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+		# Reward model sequence length cap (affects memory/throughput).
+		self.model_max_seq_len = int(kwargs.get("model_max_seq_len", gated_ssm_agent.default_max_seq_len))
+
+		# Optional toggles (useful for fast synthetic runs / testing).
+		self.use_torch_compile = bool(kwargs.get("use_torch_compile", True))
+		self.disable_tqdm = bool(kwargs.get("disable_tqdm", False))
+
 		# Ensure num_objectives is an int
 		self.num_objectives = int(self.num_objectives)
+
+		# Default explore classes: treat each objective as its own "class".
+		if self.explore_classes is None:
+			self.explore_classes = np.arange(self.num_objectives, dtype=np.int32)
+		else:
+			self.explore_classes = np.asarray(self.explore_classes, dtype=np.int32)
+			if self.explore_classes.shape[0] != self.num_objectives:
+				raise ValueError(
+					f"explore_classes must have length num_objectives={self.num_objectives}, "
+					f"got shape={self.explore_classes.shape}"
+				)
 
 		# If reward_signal_dims not specified, set it to num_objectives
 		if self.reward_signal_dims is None:
@@ -477,8 +499,15 @@ class AgentBird:
 			output_dim=self.num_objectives,
 			hidden_dims=self.hidden_dims,
 			dropout_rate=self.dropout_rate,
+			max_seq_len=self.model_max_seq_len,
+			device=self.device,
 		)
-		self.model = torch.compile(self.model).to(self.device)
+		self.model = self.model.to(self.device)
+		if self.use_torch_compile and hasattr(torch, "compile"):
+			try:
+				self.model = torch.compile(self.model)
+			except Exception:
+				pass
 
 		# Initialize optimizer (AdamW) for the model
 		self.optimizer = AdamW(self.model.parameters(), lr=self.lr, weight_decay=0.1)
@@ -597,8 +626,8 @@ class AgentBird:
 		self.model.eval()
 		test_input = test_input.to(self.device)
 
-		# By default, we pass the entire sequence. If we want a single step, we might clamp it.
-		current_seq_len = test_input.shape[1]
+		seq_len_limit = self.model_max_seq_len
+		current_seq_len = min(test_input.shape[1], seq_len_limit)
 
 		# Optionally apply a 'conversion_model' if set (unused by default).
 		if self.conversion_model is not None:
@@ -608,19 +637,23 @@ class AgentBird:
 				test_input[chunk_idx:chunk_idx + chunk_size, :, -self.num_objectives:] = \
 					self.conversion_model(test_input[chunk_idx:chunk_idx + chunk_size, :, -self.num_objectives:])
 
-		# We pad the input if shorter than the default. 
-		# In practice, the MLP might not need strict padding, but this is an example from the code.
-		# "gated_ssm_agent.default_max_seq_len" is used to ensure shape consistency.
-		test_input = torch.cat([
-			test_input,
-			torch.zeros(
-				(
-					test_input.shape[0],
-					gated_ssm_agent.default_max_seq_len - current_seq_len,
-					*test_input.shape[2:],
-				), device=test_input.device,
-			),
-		], dim=1)
+		# Keep a bounded context window and pad to the model's expected sequence length.
+		if test_input.shape[1] > seq_len_limit:
+			test_input = test_input[:, -seq_len_limit:]
+		else:
+			pad_length = seq_len_limit - test_input.shape[1]
+			if pad_length > 0:
+				test_input = torch.cat([
+					test_input,
+					torch.zeros(
+						(
+							test_input.shape[0],
+							pad_length,
+							*test_input.shape[2:],
+						),
+						device=test_input.device,
+					),
+				], dim=1)
 
 		# Run inference in chunks to avoid OOM if large
 		chunks = []
@@ -630,13 +663,15 @@ class AgentBird:
 			disable = (not self.accelerator.is_main_process)
 		else:
 			disable = False
+		disable = disable or self.disable_tqdm
 
 		with torch.no_grad():
 			for idx in tqdm(range(0, test_input.shape[0], chunk_size), desc="Predicting rewards... (done in chunks to save VRAM)", disable=disable):
 				chunk = test_input[idx:idx + chunk_size]
 				# The model returns shape [batch_size, seq_len, output_dim].
 				# We pick the last time step or a specific one (just an example).
-				chunk_output = self.model(chunk, current_seq_len=current_seq_len)[..., current_seq_len, :]
+				target_idx = max(0, current_seq_len - 1)
+				chunk_output = self.model(chunk, current_seq_len=current_seq_len)[..., target_idx, :]
 				chunks.append(chunk_output)
 		sampled_preds = torch.cat(chunks, dim=0)
 		self.model.train()
@@ -840,6 +875,13 @@ class AgentBird:
 		else:
 			self.train_y = torch.cat([self.train_y, observed_reward], dim=-2).float()
 
+		# Keep a bounded context window (the reward model is limited to this anyway).
+		seq_len_limit = self.model_max_seq_len
+		if self.X is not None and self.X.shape[1] > seq_len_limit:
+			self.X = self.X[:, -seq_len_limit:]
+		if self.train_y is not None and self.train_y.shape[1] > seq_len_limit:
+			self.train_y = self.train_y[:, -seq_len_limit:]
+
 		return observed_reward
 
 	def update(
@@ -897,7 +939,7 @@ class AgentBird:
 		y = self.train_y.to(self.device).float()
 
 		# We limit the sequence length if it is bigger than the MLP can handle
-		seq_len_limit = gated_ssm_agent.default_max_seq_len
+		seq_len_limit = self.model_max_seq_len
 		x = x[:, -seq_len_limit:]
 		y = y[:, -seq_len_limit:]
 
@@ -936,7 +978,7 @@ class AgentBird:
 
 		num_iterations = int(num_iterations)
 
-		progress_bar = tqdm(range(num_iterations), desc="Training Agent Bird...", leave=False)
+		progress_bar = tqdm(range(num_iterations), desc="Training Agent Bird...", leave=False, disable=self.disable_tqdm)
 		loss_val = 999
 		# We'll do a small training loop
 		with torch.enable_grad():

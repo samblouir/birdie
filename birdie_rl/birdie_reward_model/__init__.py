@@ -20,8 +20,20 @@ USAGE:
 		model = train_step(model, batch)
 """
 
-# Import the Birdie class from birdie.py so it is accessible at the package level.
-from .birdie import Birdie
+from __future__ import annotations
 
-# Restricts __all__ variable to simplify a code running "from birdie_reward_model import *"
+from typing import Any
+
 __all__ = ["Birdie"]
+
+def __getattr__(name: str) -> Any:  # pragma: no cover
+	if name != "Birdie":
+		raise AttributeError(name)
+	try:
+		from .birdie import Birdie
+	except Exception as exc:  # noqa: BLE001 - want to catch torch/datasets import failures too
+		raise ImportError(
+			"Failed to import `Birdie` (optional dependencies/runtime issue). "
+			"This does not affect importing submodules like `agent_bird` for synthetic runs."
+		) from exc
+	return Birdie

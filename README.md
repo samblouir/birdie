@@ -317,7 +317,19 @@ If you recently switched GPUs and see errors like `ImportError: libcusparseLt.so
   - CUDA 12.4 example: `pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124`  
   - CPU-only (pipeline debugging): `pip install --upgrade --force-reinstall torch --index-url https://download.pytorch.org/whl/cpu`
 - Docker option (recommended for “it just works” CUDA):  
-  `docker run --gpus all -it --rm -v "$PWD":/workspace -w /workspace pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime bash`
+  `docker pull pytorch/pytorch:2.9.1-cuda13.0-cudnn9-devel`  
+  `docker run --gpus all -it --rm -v "$PWD":/workspace -w /workspace pytorch/pytorch:2.9.1-cuda13.0-cudnn9-devel bash`
+
+### Reward-model synthetic simulation
+
+If you want to iterate on agent design (reward shaping, exploration schedules, speed, etc.) without running the full dataloader, you can drive the reward model with fully synthetic losses/actions:
+
+- Run a fast CPU sanity/throughput check (prints steps/sec):  
+  `python -m birdie_rl.birdie_reward_model.synthetic_simulation`
+- Reproducibility test:  
+  `python -m unittest birdie_rl.birdie_reward_model.test_synthetic_simulation`
+
+Note: `gated_ssm_agent.py` will use `torch.nn.attention.flex_attention` if available; otherwise it falls back to `torch.nn.functional.scaled_dot_product_attention`.
 
 ### Optional C++ infilling backend
 
@@ -344,6 +356,7 @@ birdie_rl/
     reward_model.py     # Simplified API for the reward model
     rotary.py           # Rotary positional encoding utilities
     gated_ssm_agent.py  # Default Transformer
+    synthetic_simulation.py # Synthetic reward-model driver + throughput
   example_usage/
     example.py          # Minimal usage script
     ul2_config.py       # UL2-inspired objectives

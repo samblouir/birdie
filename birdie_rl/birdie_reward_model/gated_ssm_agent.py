@@ -27,8 +27,23 @@ from torch.optim import Adam, AdamW
 
 # Rotary embeddings for Q,K
 from birdie_rl.birdie_reward_model import rotary
-from torch.nn.attention.flex_attention import create_block_mask
-create_block_mask = torch.compile(create_block_mask)
+try:
+    from torch.nn.attention.flex_attention import create_block_mask as _create_block_mask
+    from torch.nn.attention.flex_attention import flex_attention as _flex_attention
+    _HAS_FLEX_ATTENTION = True
+except Exception:
+    _create_block_mask = None
+    _flex_attention = None
+    _HAS_FLEX_ATTENTION = False
+
+if _HAS_FLEX_ATTENTION and hasattr(torch, "compile"):
+    try:
+        create_block_mask = torch.compile(_create_block_mask)
+    except Exception:
+        create_block_mask = _create_block_mask
+else:
+    create_block_mask = _create_block_mask
+
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")
@@ -167,6 +182,8 @@ class MHA(nn.Module):
         # For demonstration: the number of heads for Q can differ from K/V if GQA is used
         self.num_heads = dims // head_dims
         self.gqa_num_heads = 2  # e.g., grouping for keys/values
+        if self.num_heads < self.gqa_num_heads or (self.num_heads % self.gqa_num_heads) != 0:
+            self.gqa_num_heads = 1
 
         # Dimensions for Q, K, V
         q_dims = head_dims * self.num_heads
@@ -183,7 +200,7 @@ class MHA(nn.Module):
         # RMS-split for input norm
         self.norm = RMS_split(dims)
 
-    def forward(self, x, block_mask=None):
+    def forward(self, x, block_mask=None, attn_mask=None):
         """
         Forward pass for MHA with optional block_mask.
 
@@ -191,6 +208,8 @@ class MHA(nn.Module):
           x (Tensor): shape [batch, seq_len, dims]
           block_mask (Tensor or None): shape e.g. [1,1,Q_LEN,KV_LEN], 
                                        for controlling which positions can attend.
+          attn_mask (Tensor or None): bool or float attention mask broadcastable to
+                                      [batch, heads, Q_LEN, KV_LEN] (used for SDPA fallback).
         Returns:
           Tensor: shape [batch, seq_len, dims]
         """
@@ -212,14 +231,34 @@ class MHA(nn.Module):
         # Project V similarly, shape [b, gqa_num_heads, seq, dims]
         v = einops.rearrange(self.v_proj(x), 'b s (h d) -> b h s d', h=self.gqa_num_heads)
 
-        # Use the custom "flex_attention" function from PyTorch's experimental module
-        mha_out = torch.nn.attention.flex_attention.flex_attention(
-            query=q,
-            key=k,
-            value=v,
-            block_mask=block_mask,
-            enable_gqa=True,  # if we have gqa_num_heads < num_heads for Q
-        )
+        use_flex_attention = _HAS_FLEX_ATTENTION and (block_mask is not None) and (_flex_attention is not None)
+        if use_flex_attention:
+            # Use the custom "flex_attention" function from PyTorch's experimental module
+            mha_out = _flex_attention(
+                query=q,
+                key=k,
+                value=v,
+                block_mask=block_mask,
+                enable_gqa=(self.gqa_num_heads != self.num_heads),
+            )
+        else:
+            # Fallback to SDPA (CPU-safe, available in stable PyTorch).
+            if k.shape[1] != q.shape[1]:
+                if (q.shape[1] % k.shape[1]) != 0:
+                    raise ValueError(
+                        f"GQA head mismatch: q_heads={q.shape[1]} not divisible by kv_heads={k.shape[1]}"
+                    )
+                repeat_factor = q.shape[1] // k.shape[1]
+                k = k.repeat_interleave(repeat_factor, dim=1)
+                v = v.repeat_interleave(repeat_factor, dim=1)
+            mha_out = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                dropout_p=0.0,
+                is_causal=False,
+            )
 
         # Rearrange back
         mha_out = einops.rearrange(mha_out, 'b h s d -> b s (h d)')
@@ -389,20 +428,45 @@ class MLPModel(nn.Module):
                 causal_mask = (q_idx >= kv_idx)
                 return causal_mask & is_valid_loc
 
-            # Build the block_mask using create_block_mask if needed
-            block_mask = create_block_mask(
-                mask_mod,
-                B=x.shape[0],   # or 1 if we want same mask for entire batch
-                H=1,           # or num_heads
-                Q_LEN=self.sequence_length,
-                KV_LEN=self.sequence_length,
-                device=x.device,
-            )
+            block_mask = None
+            attn_mask = None
+
+            if current_seq_len is None:
+                current_seq_len = x.shape[1]
+            current_seq_len = int(current_seq_len)
+
+            if create_block_mask is not None:
+                # Build the block_mask using create_block_mask if available.
+                block_mask = create_block_mask(
+                    mask_mod,
+                    B=x.shape[0],  # or 1 if we want same mask for entire batch
+                    H=1,  # or num_heads
+                    Q_LEN=x.shape[1],
+                    KV_LEN=x.shape[1],
+                    device=x.device,
+                )
+            else:
+                # SDPA fallback mask:
+                # - causal for tokens < current_seq_len
+                # - ensure rows for padded queries still have at least one valid entry
+                #   to avoid NaNs (we allow self-attend on padded positions).
+                seq_len = x.shape[1]
+                q_idx = torch.arange(seq_len, device=x.device)[:, None]
+                kv_idx = torch.arange(seq_len, device=x.device)[None, :]
+                causal = q_idx >= kv_idx
+
+                if current_seq_len >= seq_len:
+                    attn_mask = causal
+                else:
+                    valid_q = q_idx < current_seq_len
+                    valid_kv = kv_idx < current_seq_len
+                    diag = q_idx == kv_idx
+                    attn_mask = (valid_q & valid_kv & causal) | (~valid_q & diag)
 
             # Pass through each layer
             for layer in self.layers:
                 if isinstance(layer, MHA):
-                    x = layer(x, block_mask=block_mask)
+                    x = layer(x, block_mask=block_mask, attn_mask=attn_mask)
                 else:
                     x = layer(x)
 

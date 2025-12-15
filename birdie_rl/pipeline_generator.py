@@ -4,7 +4,6 @@ import threading
 import queue
 from typing import List
 import torch
-from datasets import load_dataset
 import multiprocessing as mp
 import queue as local_queue
 import time
@@ -348,6 +347,14 @@ def _my_text_source():
 	This uses "roneneldan/TinyStories" on HuggingFace for example data.
 	Replace with your own source if desired.
 	"""
+	try:
+		from datasets import load_dataset
+	except Exception as exc:
+		raise ImportError(
+			"`datasets` is required for the example `_my_text_source()` generator. "
+			"Install it with `pip install datasets` or replace `_my_text_source()` with your own data generator."
+		) from exc
+
 	ds = load_dataset("roneneldan/TinyStories", split="train")
 	while True:
 		for x in ds:
