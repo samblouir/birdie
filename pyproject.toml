@@ -20,6 +20,9 @@ requires-python = ">=3.8"
 dependencies = [
     "numpy==1.26.4",
     "torch",
+    "einops",
+    "tqdm",
+    "dill",
     "tiktoken",
     "datasets",
     "accelerate",
@@ -42,4 +45,3 @@ include = [
   "modeling", 
   "objectives",
 ]
-
