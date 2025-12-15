@@ -12,20 +12,20 @@ This codebase is designed to be hackable, allowing for swappable reward function
 Currently, decoder-only and causal or prefix-LM **state space models** and **Transformers** are supported.
 Birdie also features **sequence packing** for efficient training.
 
-For full performance benefits, **it is strongly recommended to use a prefix-LM SSM or Transformer with Birdie.** Please see "example_usage/base_model.py" for an example of a prefix-LM Transformer in PyTorch.
+For full performance benefits, **it is strongly recommended to use a prefix-LM SSM or Transformer with Birdie.** Please see `birdie_rl/example_usage/base_model.py` for an example of a prefix-LM Transformer in PyTorch.
 Birdie benefits both causal and bidirectional models on multi-Phone number retrieval, but most strongly improved SQuAD v2 performance when coupled with a bidirectional, prefix-LM model.
 
 ### Installation
-   ```bash
-   # For a standard installation
-   pip install git+https://github.com/samblouir/birdie.git
+```bash
+# For a standard installation
+pip install git+https://github.com/samblouir/birdie.git
 
-   # To upgrade to the latest version
-   pip install git+https://github.com/samblouir/birdie.git --upgrade --no-deps
+# To upgrade to the latest version
+pip install git+https://github.com/samblouir/birdie.git --upgrade
 
-   # To re-install and get the latest version
-   pip install git+https://github.com/samblouir/birdie.git --force-reinstall --no-deps
-   ```
+# To re-install and get the latest version
+pip install git+https://github.com/samblouir/birdie.git --force-reinstall
+```
 
 ---
 
@@ -42,14 +42,13 @@ There are two primary components needed to use Birdie: adding a few lines to you
 
 You can find usage examples in:
 - **`birdie_dna`** *COMING SOON* for a complete working example with a domain specific pre-training objective configuration, unique dataset, and tokenizer.
-- **`example_usage/base_model.py`** for bidirectional, prefix-LM Transformer that use's Birdie's objectives.
-- **`example_usage/example.py`** for a minimal working example with a dummy model.
-- **`example_usage/ul2_config.py`** to see how to define objectives (Using UL2's objectives).
-- **`example_usage/utils.py`** to see how to structure a custom reward function, as well as a data generator.
-function.
+- **`birdie_rl/example_usage/base_model.py`** for bidirectional, prefix-LM Transformer that uses Birdie's objectives.
+- **`birdie_rl/example_usage/example.py`** for a minimal working example with a dummy model.
+- **`birdie_rl/example_usage/ul2_config.py`** to see how to define objectives (UL2-style configuration).
+- **`birdie_rl/example_usage/utils.py`** to see how to structure a custom reward function and data generator function.
 
 ## 1) Add Birdie to your training loop
-```
+```python
 # Training Loop
 for step_idx in range(config["num_steps"]):
 
@@ -59,9 +58,9 @@ for step_idx in range(config["num_steps"]):
         for (objective_name, batch) in birdie.measure_validation_losses():
             loss = model(**batch)
             birdie.log_validation_loss(key=objective_name, loss=loss, step_idx=step_idx)
-         model.train()
+        model.train()
 
-    # Fetch the next training batch from Birdie. It is of a fixed-shape, defined by (batch, sequence_length) in the config..
+    # Fetch the next training batch from Birdie. It is of a fixed-shape, defined by (batch, sequence_length) in the config.
     batch = birdie.get_next_training_sample()
     loss = model(**batch)
     optimizer.zero_grad()
@@ -76,7 +75,7 @@ for step_idx in range(config["num_steps"]):
 ### Create an instance of Birdie
 
 Define a config and create an instance of Birdie.
-*Additional configuration settings are documented in birdie_rl/birdie_reward_model/birdie.py Birdie.__init__().*
+*Additional configuration settings are documented in `birdie_rl/birdie_reward_model/birdie.py` (`Birdie.__init__`).*
 
 ```python
 from birdie_rl import Birdie
@@ -85,8 +84,6 @@ import tiktoken
 import accelerate
 
 # Configuration
-
-
 config = {
     # This is the batch size that Birdie will use.
     "batch_size": 8,
@@ -121,11 +118,11 @@ config = {
     # Provide your dataset fn here (See section 3 below)
     "ds": data_generator_fn,                   
 
-    # Define how to extract text from your dataset in whichever way you want. (See section 3 belowbelow)
+    # Define how to extract text from your dataset in whichever way you want. (See section 3 below)
     "text_grabber_fn": text_grabber_fn,
 
-    # Adds a separator between the prefix and suffix regions.
-    "start_generating_paradigm": "\n<|assistant|>\n", # This is also the default
+    # Token ID inserted between input and labels during packing (defaults to 2).
+    "start_generating_id": 2,
 
 }
 
@@ -143,63 +140,52 @@ It should return an iterable object for a given split, worker_id, num_workers, a
 This will allow your code to work across anywhere from one to multiple machines.
 You can also do whatever you like in data_generator_fn, including loading entirely different datasets than what you are training on.
 
-### 4) Data generator function using HuggingFace's datasets:
+Note: HuggingFace `datasets` is only needed if your `ds` function uses it (or if you rely on the built-in TinyStories default in `birdie_rl/pipeline/worker.py`).
+
+### 3) Data generator function using HuggingFace's datasets
 ```python
+from datasets import load_dataset
+
 def huggingface_data_generator_fn(split, worker_id, num_workers, rng_seed=0):
-	"""
-	The data_generator function will be called by each dataloading worker.
-	This currently only data parallel training, where each accelerator has its own copy of the model.
+    """
+    Called by each dataloading worker.
 
-	This function should return a generator for a given
-	  - split (e.g., "train", "validation", "test")
-	  - shard defined by by worker_id and num_workers
-	  - shuffle data using rng_seed
-	"""
+    Return an iterable for the given:
+    - split (e.g. "train", "validation")
+    - shard defined by worker_id and num_workers
+    - shuffle using rng_seed
+    """
 
-	# Load the TinyStories dataset from Hugging Face
-	ds = load_dataset("roneneldan/TinyStories", split=split)
-
-	# Shuffle the dataset for randomness
-	ds = ds.shuffle(rng_seed)
-
-	# Shard the dataset among multiple workers
-	ds = ds.shard(num_shards=num_workers, index=worker_id)
-
-	# Return the prepared dataset
-	return ds
+    ds = load_dataset("roneneldan/TinyStories", split=split)
+    ds = ds.shuffle(seed=rng_seed)
+    ds = ds.shard(num_shards=num_workers, index=worker_id)
+    return ds
 ```
 
-#### Data generator function from a list:
+#### Data generator function from a Python list
 ```python
+import numpy as np
+
 def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
     """
-    The data_generator function will be called by each dataloading worker.
-    This currently only data parallel training, where each accelerator has its own copy of the model.
-
-    This function should return a generator for a given
+    Called by each dataloading worker.
+    Return an iterable for the given:
     - split (e.g., "train", "validation", "test")
-    - shards it by worker_id and num_workers
     - shuffles the data using rng_seed
+    - shards it by worker_id and num_workers
     """
 
-    ds = dataloader.prepare_dataset_as_list()
-
-    # Load the TinyStories dataset from Hugging Face
     if split == "train":
-      ds = ds["train"]
+        ds = [{"text": "train example 1"}, {"text": "train example 2"}]
     elif split == "validation":
-      ds = ds['validation']
+        ds = [{"text": "val example 1"}, {"text": "val example 2"}]
+    else:
+        ds = [{"text": "test example 1"}]
 
-    # Shuffle the dataset for randomness
-    seeded_np_rng = np.random.default_rng(rng_seed)
-    seeded_np_rng.shuffle(ds)
-
-    # Shard the dataset among multiple workers
-    ds = ds[worker_id::num_workers]
-
-    # Return the prepared dataset
-    return ds
-  ```
+    rng = np.random.default_rng(rng_seed)
+    rng.shuffle(ds)
+    return ds[worker_id::num_workers]
+```
 
 
 #### Important: Element grabber function
@@ -214,37 +200,29 @@ def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
    ```
   
    Then we can make a text_grabber_fn like this to tell the dataloader how to extract the text from each element.
-  ```  
+  ```python
   def text_grabber_fn(x):
-    return x["entry"]["text"]
+      return x["entry"]["text"]
   ```
 
   Then, we pass it into Birdie's config as "text_grabber_fn": text_grabber_fn
 
   For the above HuggingFace example using TinyStories, we want to use this text_grabber_fn:
 
-  ```python
-     def text_grabber_fn(x):
-        return x["text"]
-  ```
-
-   
-
-
-
-
-
+```python
+def text_grabber_fn(x):
+    return x["text"]
+```
 
 ## Additional important usage notes:
 
 Birdie's code assumes your model accepts the following keyword arguments:
 - `input_ids` (torch.Long): The input token IDs in a shape of (batch_size, sequence_length)
 - `label_ids` (torch.Long): The target token IDs in a shape of (batch_size, sequence_length). This is used for calculating the loss.
-- `attention_mask` (torch.Long): The attention mask in a shape of (batch_size, sequence_length). Indices with 1 are areas allowed to have bidirectional Attention. Indices with 0 should be modeled causally.
+- `attention_mask` (torch.Long): A per-token mask *type* in a shape of (batch_size, sequence_length). In `packer_batcher2.py`: `0` is padding, `1` marks the bidirectional prefix region, `2` is reserved for latent tokens, and `3` marks the causal generation region.
 - `segment_ids` (torch.Long): The segment IDs in a shape of (batch_size, sequence_length). This is used for models that support segment embeddings.
 
 ---
-
 
 ## Features & Highlights
 
@@ -272,57 +250,71 @@ Birdie's code assumes your model accepts the following keyword arguments:
 
 ---
 
-## Installation
+## Testing & Debugging
 
-### Simplest install approach
+### Dataloader hang / throughput checks
 
-First, install birdie.
-   ```bash
-   pip install git+https://github.com/samblouir/birdie.git
-   ```
+Birdie’s “preparing training samples” path is easiest to debug by isolating objectives and measuring throughput.
 
-Then see "example_usage/example.py" for an example of how to use Birdie with your Torch (or, with minimal modifications, JAX) training loop.
+- Per-objective stress tests (2048 + 16384) and mixed-objective stress tests (prints throughput):  
+  ```bash
+  python -m unittest birdie_rl.pipeline.test_worker_objective_stress
+  ```
+- Objective-only benchmark runner (same idea as the unittest, but without assertions):  
+  ```bash
+  python -m birdie_rl.pipeline.benchmark_worker_objectives
+  ```
+- Compare Python vs C++ infilling throughput (prints speedup):  
+  ```bash
+  python -m birdie_rl.pipeline.benchmark_worker_objectives --compare-infilling-backends
+  ```
+- Full Birdie batch-generation benchmark (requires a working PyTorch install):  
+  ```bash
+  python birdie_rl/example_usage/benchmark_dataloader.py
+  ```
 
-## Dataloader Debugging
+### Reproducibility (100% deterministic sampling)
 
-Data processing issues?
-in *birdie_rl/pipeline/worker.py*, uncomment the print line in this function:
-```python
-  	def print(self, *args, **kwargs):
-      """
-      Helper method to print with worker info.
-      """
-      # print(*args, **kwargs) ## Uncomment this to enable worker debug printing
-      pass
+To make objective selection and per-sample RNG seeds reproducible across runs (and across worker PIDs), set:
+
+- `config["seed"] = 123` (or any fixed integer)
+- `config["deterministic_worker_rng"] = True`
+
+This removes PID/time from worker RNG seeding. Your `data_generator` should also respect its `rng_seed` argument (avoid adding PID/time in your generator if you want determinism).
+
+### Developer install (editable)
+
+```bash
+git clone https://github.com/samblouir/birdie.git
+cd birdie
+pip install -e .
 ```
 
-### In-depth Installation Instructions
+### Troubleshooting imports (PyTorch/CUDA)
 
+If `import birdie_rl` works but accessing `birdie_rl.Birdie` raises an ImportError, your PyTorch install is not usable in this environment (often due to mismatched CUDA/NVIDIA driver libraries). For pipeline-only debugging you can still run the stress tests above, since they don’t require PyTorch.
 
-#### Prerequisites
-- Python 3.8+
-- Git
+If you recently switched GPUs and see errors like `ImportError: libcusparseLt.so.0`, the fastest path is usually to reinstall a matching PyTorch wheel (or use a CUDA-enabled Docker image).
 
-#### Steps
+- Driver sanity check: `nvidia-smi`
+- Torch sanity check: `python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"`
+- Reinstall PyTorch (pick the CUDA version that matches your driver/toolkit):  
+  - CUDA 12.4 example: `pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124`  
+  - CPU-only (pipeline debugging): `pip install --upgrade --force-reinstall torch --index-url https://download.pytorch.org/whl/cpu`
+- Docker option (recommended for “it just works” CUDA):  
+  `docker run --gpus all -it --rm -v "$PWD":/workspace -w /workspace pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime bash`
 
-1. **Clone the Repository**  
-   ```bash
-   git clone https://github.com/samblouir/birdie.git
-   cd birdie-rl
-   ```
+### Optional C++ infilling backend
 
-2. **Install Dependencies**  
-   Birdie RL relies on `numpy`, `torch`, `datasets`, and `accelerate`. Install them via:
-   ```bash
-   pip install -r requirements.txt
-   ```
-   *(Alternatively, manually `pip install numpy torch datasets accelerate`.)*
+Birdie includes an optional C++ backend for the infilling objective. If it builds successfully, it will be used automatically; otherwise Birdie falls back to the pure-Python implementation.
 
-3. **Verify Setup**  
-   Test everything with a sample script:
-   ```bash
-   python example_usage/example.py
-   ```
+- Infilling fallback: the objective tries up to `InfillingConfig.max_attempts` to insert at least one masked span. If it still inserts zero spans, it forces a single masked span so `label_ids` is non-empty (keeps the sample trainable and prevents the worker from spinning on empty-label samples).
+- Optional multi-seed search (fast backend only): set `InfillingConfig.fast_backend_num_candidates > 1` to try multiple deterministic seed variants in parallel and pick the first candidate (by index) that produces a non-fallback infilling sample.
+- Build the extension in-place (developer workflow): `python setup.py build_ext --inplace`
+- Run equivalence + reproducibility tests (fast-backend checks are skipped if the extension is unavailable):  
+  `python -m unittest birdie_rl.objectives.test_infilling_backends`
+- Disable building the extension at install time: `BIRDIE_DISABLE_FAST_EXT=1 pip install -e .`
+- Disable using the extension at runtime: set `InfillingConfig(use_fast_backend=False)` (or via objective `config_overrides`).
 
 ---
 
@@ -340,7 +332,7 @@ birdie_rl/
   example_usage/
     example.py          # Minimal usage script
     ul2_config.py       # UL2-inspired objectives
-    utils.py            # Shows functions Birdie needsreward fn, data gen, etc.
+    utils.py            # Shows reward_fn and data gen patterns
   objectives/
     base.py              # BaseObjective class. Shows how to add objectives.
     selective_copying.py # A new structured-deshuffling objective introduced in Birdie
@@ -352,9 +344,10 @@ birdie_rl/
     prefix_language_modeling.py
   pipeline/
     main_controller.py  # Objective distribution & worker coordination
-    packer_batcher.py   # Sequence packing logic
+    packer_batcher2.py  # Sequence packing logic
+    benchmark_worker_objectives.py # Objective-only throughput benchmark
     worker.py           # Worker processes to transform data
-    pipeline_generator.py
+  pipeline_generator.py
   load_objective.py      # Registry for objective loading
   ...
 ```
@@ -406,6 +399,3 @@ If you use (or build on) Birdie RL in your work, kindly cite our **EMNLP 2024** 
     pages = "9679--9705",
 }
 ```
-
-
-
