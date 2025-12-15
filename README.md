@@ -273,6 +273,21 @@ Birdie’s “preparing training samples” path is easiest to debug by isolatin
   python birdie_rl/example_usage/benchmark_dataloader.py
   ```
 
+### Measured per-objective throughput (Intel i7-10700K)
+
+Measured on `Intel(R) Core(TM) i7-10700K CPU @ 3.80GHz` using `python -m unittest birdie_rl.pipeline.test_worker_objective_stress` (single worker, `batch_size=1`, packed tokens/sec).
+
+| Objective | tok/s @2048 | tok/s @16384 |
+| --- | ---: | ---: |
+| `autoencoding_with_deshuffling` | 359,841 | 1,040,682 |
+| `autoencoding` | 357,100 | 1,056,157 |
+| `copying` | 484,687 | 3,562,316 |
+| `deshuffling` | 248,715 | 1,594,154 |
+| `infilling` (C++ fast backend) | 69,498 | 123,523 |
+| `next_token_prediction` | 497,818 | 3,134,005 |
+| `prefix_language_modeling` | 494,395 | 3,085,263 |
+| `selective_copying` | 400,331 | 1,094,988 |
+
 ### Reproducibility (100% deterministic sampling)
 
 To make objective selection and per-sample RNG seeds reproducible across runs (and across worker PIDs), set:
