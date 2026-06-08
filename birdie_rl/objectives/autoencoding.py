@@ -178,25 +178,14 @@ class AutoencodingObjective(BaseObjective):
 					"original_length": label_max_original_idx, # Length of original text segment used for labels
 				}
 
-		# Fallback if no placeholders inserted after all attempts
-		final_input_ids = list(prompt_toks)
-		# Use up to max_n_tokens of original text if no masking happened
-		final_input_ids.extend(encoded_input[:max_n_tokens]) 
-		label_ids_list = list(encoded_input[:max_n_tokens])
-		if self.tokenized_paradigm_end:
-			if len(final_input_ids) + len(label_ids_list) + len(self.tokenized_paradigm_end) <= config.remaining_space:
-				label_ids_list.extend(self.tokenized_paradigm_end)
-
-		unused_input_ids_list = encoded_input[max_n_tokens:]
-		unused_input_str = tokenizer.decode(unused_input_ids_list)
-		
 		return {
-			"status": "ok", # Still "ok" but unmasked
-			"objective": "Autoencoding (fallback, unmasked)",
-			"input_ids": np.array(final_input_ids, dtype=np.int32),
-			"label_ids": np.array(label_ids_list, dtype=np.int32),
-			"unused_input_string": unused_input_str,
-			"unused_input_ids": np.array(unused_input_ids_list, dtype=np.int32),
+			"status": "fail",
+			"objective": "Autoencoding",
+			"message": "Failed to insert any mask spans within max_attempts.",
+			"input_ids": np.array([], dtype=np.int32),
+			"label_ids": np.array([], dtype=np.int32),
+			"unused_input_string": input_text,
+			"unused_input_ids": np.array(encoded_input, dtype=np.int32),
 			"masked_count": 0,
-			"original_length": max_n_tokens,
+			"original_length": 0,
 		}

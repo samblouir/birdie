@@ -77,28 +77,13 @@ class PrefixLanguageModelingObjective(BaseObjective):
 		length_of_used_text_tokens = len(used_tokens_list)
 
 		if length_of_used_text_tokens < 2: # e.g., need at least one for prefix, one for suffix
-			# Fallback: input is paradigm + all used_tokens, label is all used_tokens (or empty if no paradigm makes it too long)
-			# This effectively becomes next token prediction if prefix is empty.
-			final_input_ids_list = list(paradigm_tokens_list) + used_tokens_list
-			final_label_ids_list = used_tokens_list
-			
-			# Final check if this fallback fits
-			if len(final_input_ids_list) + len(final_label_ids_list) > config.remaining_space:
-				# If even fallback doesn't fit, return minimal or error
-				return {
-					"status": "fail", "objective": "Prefix Language Modeling",
-					"input_ids": np.array(paradigm_tokens_list, dtype=np.int32),
-					"label_ids": np.array([], dtype=np.int32),
-					"unused_input_string": input_text, "unused_input_ids": np.array(self.tokenizer.encode(input_text), dtype=np.int32),
-					"message": "Fallback (NTP style) for very short text also too long."
-				}
-
 			return {
-				"status": "ok", "objective": "Prefix Language Modeling (short text fallback)",
-				"input_ids": np.array(final_input_ids_list, dtype=np.int32),
-				"label_ids": np.array(final_label_ids_list, dtype=np.int32),
-				"unused_input_string": leftover_text,
-				"unused_input_ids": np.array(leftover_tokens_list, dtype=np.int32),
+				"status": "fail", "objective": "Prefix Language Modeling",
+				"input_ids": np.array([], dtype=np.int32),
+				"label_ids": np.array([], dtype=np.int32),
+				"unused_input_string": input_text,
+				"unused_input_ids": np.array(self.tokenizer.encode(input_text), dtype=np.int32),
+				"message": "Not enough tokens for a prefix/suffix split."
 			}
 
 		prefix_len = int(np.floor(length_of_used_text_tokens * config.prefix_fraction))
@@ -167,4 +152,3 @@ if __name__ == "__main__":
 		print("Unused text:", result["unused_input_string"])
 	else:
 		print("Error/Message:", result.get("message", "N/A"))
-

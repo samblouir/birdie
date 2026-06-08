@@ -325,9 +325,8 @@ class SelectiveCopyingObjective(BaseObjective):
 					self._debug_print(f"    Not enough space for min_context_content_length ({available_for_actual_context_text} < {config.min_context_content_length}). Continuing to next attempt.", level=2)
 					continue 
 		
-		# Fallback if loop completes without returning
-		# Using standard print for this important fallback message, ensuring it's always visible
-		fallback_message = (
+		# Hard fail if the loop completes without returning a valid sample.
+		failure_message = (
 			f"[{self.objective_name}]\n"
 			f"Failed to insert any valid copy instructions after {config.max_attempts} attempts.\n"
 			f"Configured remaining_space: {config.remaining_space}, Input text original tokens: {n_total_original_tokens}.\n"
@@ -336,7 +335,7 @@ class SelectiveCopyingObjective(BaseObjective):
 			# f"Last placeholders generated in an attempt (before final check): {placeholders_generated_count_in_last_successful_generation_loop if 'placeholders_generated_count_in_last_successful_generation_loop' in locals() else 'N/A'}.\n"
 			f"Input text (first 100 chars of {len(input_text)}): '{input_text[:100]}...'"
 		)
-		print(fallback_message, flush=True)
+		print(failure_message, flush=True)
 		return {
 			"status": "fail", "objective": f"{self.objective_name} (generation failed)",
 			"message": "Failed to generate valid sample within token budget after all attempts.",
@@ -449,4 +448,3 @@ if __name__ == "__main__":
 	result_tight = obj_tight("This is a slightly longer test text for the tight configuration to see if it can extract at least one small snippet.") 
 	print("Status (tight space):", result_tight["status"])
 	print("Message (tight space):", result_tight.get("message", "N/A"))
-

@@ -4,7 +4,7 @@ Infilling Objective:
 - Places placeholders for certain spans in the input (decided stochastically).
 - The label is built by concatenating [placeholder + masked tokens] for each span.
 - We skip any span if adding it would exceed `remaining_space`.
-- If no spans are inserted after `max_attempts`, we revert to returning unmasked text.
+- If no spans are inserted after `max_attempts`, the objective fails.
 - Optimizes by pre-tokenizing static strings like paradigm, mask_prefix, and mask_suffix.
 - Corrects TypeError in slicing by ensuring span_len_to_mask is an integer.
 """
@@ -163,25 +163,16 @@ class InfillingObjective(BaseObjective):
 					"original_length": text_idx, 
 				}
 
-		final_input_ids = list(prompt_toks)
-		final_input_ids.extend(encoded_input[:max_n_tokens_to_process]) 
-		
-		final_label_ids_list = []
-		if self.tokenized_paradigm_end:
-			if len(final_input_ids) + len(self.tokenized_paradigm_end) <= config.remaining_space:
-				final_label_ids_list.extend(self.tokenized_paradigm_end)
-
-		unused_input_ids_list = encoded_input[max_n_tokens_to_process:]
-		unused_input_str = tokenizer.decode(unused_input_ids_list)
 		return {
-			"status": "ok", 
-			"objective": "Infilling (fallback, unmasked)",
-			"input_ids": np.array(final_input_ids, dtype=np.int32),
-			"label_ids": np.array(final_label_ids_list, dtype=np.int32),
-			"unused_input_string": unused_input_str,
-			"unused_input_ids": np.array(unused_input_ids_list, dtype=np.int32),
+			"status": "fail",
+			"objective": "Infilling",
+			"message": "Failed to insert any infilling spans within max_attempts.",
+			"input_ids": np.array([], dtype=np.int32),
+			"label_ids": np.array([], dtype=np.int32),
+			"unused_input_string": input_text,
+			"unused_input_ids": np.array(encoded_input, dtype=np.int32),
 			"masked_count": 0,
-			"original_length": max_n_tokens_to_process,
+			"original_length": 0,
 		}
 
 if __name__ == "__main__":

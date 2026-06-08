@@ -50,6 +50,14 @@ def datagen_thread_fn(
 
 			if datagen_stop_event.is_set(): break
 
+			if isinstance(batch_item_from_results_q, dict) and "error" in batch_item_from_results_q:
+				try:
+					output_q.put({"__pipeline_error__": batch_item_from_results_q["error"]}, timeout=0.5)
+				except local_queue.Full:
+					pass
+				if not datagen_stop_event.is_set(): datagen_stop_event.set()
+				break
+
 			if batch_item_from_results_q is None:
 				sentinels_received_from_batchers += 1
 				if num_batcher_processes > 0 and sentinels_received_from_batchers >= num_batcher_processes:
@@ -130,6 +138,14 @@ def samples_to_batch_fn(
 			if worker_output_item is None:
 				sentinels_received_from_workers +=1
 				continue
+
+			if isinstance(worker_output_item, dict) and "error" in worker_output_item:
+				try:
+					results_queue.put({"error": worker_output_item["error"]}, timeout=0.5)
+				except queue.Full:
+					pass
+				if not stop_event.is_set(): stop_event.set()
+				break
 
 			if not isinstance(worker_output_item, dict) or "stacked_batch_data" not in worker_output_item:
 				# print_fn(f"[samples_to_batch_fn PID {pid}] Invalid item from worker, skipping: {str(worker_output_item)[:100]}", flush=True)
@@ -276,12 +292,18 @@ def pipeline_data_generator(
 					continue
 				if datagen_stop_event.is_set() and batch is None: shutdown_initiated_by_generator = True; break
 				if batch is None: shutdown_initiated_by_generator = True; break
+				if isinstance(batch, dict) and "__pipeline_error__" in batch:
+					shutdown_initiated_by_generator = True
+					error_info = batch["__pipeline_error__"]
+					if isinstance(error_info, dict):
+						raise RuntimeError(error_info.get("message", str(error_info)))
+					raise RuntimeError(str(error_info))
 				yield batch
 				output_q_for_generator.task_done()
-		except Exception as e:
+		except Exception:
 			# print_gen_final(f"Exception in _final_generator: {e}", flush=True)
-			traceback.print_exc(file=sys.stdout); sys.stdout.flush()
 			shutdown_initiated_by_generator = True
+			raise
 		finally:
 			if shutdown_initiated_by_generator:
 				if datagen_stop_event and not datagen_stop_event.is_set(): datagen_stop_event.set()

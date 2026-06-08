@@ -41,15 +41,16 @@ class CopyingObjective(BaseObjective):
         without partial truncation. If the total would exceed `remaining_space`, we skip.
         """
         
+        p_toks = []
         if config.paradigm:
             p_toks = self.tokenizer.encode(config.paradigm)
             p_toks = self.safe_cast_to_list(p_toks)
             
-        # Slice up to config.remaining_space (no dividing by 2).
+        # The packer stores both prompt/input tokens and labels.
         slice_data = slice_text_by_remaining_space(
             text=input_text,
             tokenizer=self.tokenizer,
-            remaining_space=config.remaining_space//2 - len(p_toks),
+            remaining_space=(config.remaining_space - len(p_toks)) // 2,
         )
         used_tokens = slice_data["used_tokens"]     # np.array of used tokens
         leftover_text = slice_data["unused_text"]   # leftover raw text

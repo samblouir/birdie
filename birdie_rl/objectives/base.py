@@ -18,8 +18,8 @@ import sys # For sys.stdout.flush() in example
 class BaseObjectiveConfig:
 	objective: str = ""
 	rng_seed: int = 42
-	minimum_sequence_length: int = 128
-	minimum_remaining_space: int = 256 # Min space an objective needs to even attempt processing
+	minimum_sequence_length: int = 0
+	minimum_remaining_space: int = 1 # Min space an objective needs to even attempt processing
 	maximum_sequence_length: int = -1
 	maximum_remaining_space: int = -1
 	remaining_space: int = -1 # Actual space in current packer passed by Worker
@@ -181,4 +181,3 @@ if __name__ == "__main__":
 	assert result_ok["status"] == "ok"
 	assert result_ok["param_used"] == "OK_PARAM"
 	assert result_ok["seed_used"] == 777
-

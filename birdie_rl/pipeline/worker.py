@@ -136,6 +136,7 @@ class Worker:
 		self.objectives_info = []
 		self.og_probs = np.array([], dtype=np.float32)
 		self.objective_cache = {}
+		self.error_sent = False
 
 	def _log_print(self, *args, verbosity_level=2, **kwargs):
 		min_worker_verbosity = 2
@@ -188,6 +189,52 @@ class Worker:
 			traceback.print_exc(file=sys.stdout)
 		finally:
 			self.collected_samples_for_batch = [] # Clear after attempting to send
+
+	def _flush_internal_packer_to_batch(self):
+		"""Pop a non-empty packed sequence into the pending output batch."""
+		if not self.internal_packer or not self.internal_packer.packers:
+			return False
+
+		current_internal_packer_instance = self.internal_packer.packers[0]
+		if not current_internal_packer_instance or current_internal_packer_instance.data_index <= 0:
+			return False
+
+		packed_data_from_internal_packer = self.internal_packer.pop(peek=False)
+		if not packed_data_from_internal_packer:
+			return False
+
+		single_packed_sequence = {k: v[0] for k, v in packed_data_from_internal_packer.items()}
+		if not single_packed_sequence.get("input_ids", np.array([])).any():
+			return False
+
+		self.collected_samples_for_batch.append(single_packed_sequence)
+		if len(self.collected_samples_for_batch) >= self.target_batch_size:
+			self._send_batch()
+		return True
+
+	def _set_leftover(self, leftover_text: str, original_text: str, allow_same_text: bool = False):
+		if isinstance(leftover_text, str) and leftover_text and (allow_same_text or leftover_text != original_text):
+			self.leftover_text = leftover_text
+		else:
+			self.leftover_text = ""
+
+	def _hard_fail(self, message: str, reason: str = "pipeline_failure"):
+		self.should_stop = True
+		if self.error_sent:
+			return
+		self.error_sent = True
+		error_item = {
+			"worker_id": self.worker_id,
+			"error": {
+				"type": "WorkerError",
+				"reason": reason,
+				"message": f"[Worker {self.worker_id}] {message}",
+			},
+		}
+		try:
+			self.sample_queue.put(error_item, timeout=1.0)
+		except Exception:
+			pass
 
 
 	def close(self):
@@ -264,6 +311,7 @@ class Worker:
 				self._log_print(f"Error getting data: {e_next}", verbosity_level=0); self.should_stop = True; return
 
 		if not (isinstance(text_to_process, str) and text_to_process.strip()):
+			self._hard_fail(f"Data generator produced empty or invalid text: {type(text_to_process).__name__}.", reason="empty_text")
 			return
 
 		try:
@@ -284,61 +332,64 @@ class Worker:
 		try: objective_instance = self._get_objective_instance(objective_name, cfg_overrides)
 		except Exception as e_get_obj:
 			self._log_print(f"Error getting objective '{objective_name}': {e_get_obj}", verbosity_level=0)
-			self.leftover_text = text_to_process; return
+			self.leftover_text = ""
+			self._hard_fail(f"Error getting objective '{objective_name}': {e_get_obj}", reason=f"{objective_name}:load_failed")
+			return
 
 		original_text_for_this_attempt = text_to_process
 		result = objective_instance(text_to_process)
 
 		if result.get("status") == "not_enough_space":
-			current_internal_packer_instance = self.internal_packer.packers[0]
-			if current_internal_packer_instance and current_internal_packer_instance.data_index > 0:
-				packed_data_from_internal_packer = self.internal_packer.pop(peek=False)
-				if packed_data_from_internal_packer:
-					single_packed_sequence = {k: v[0] for k, v in packed_data_from_internal_packer.items()}
-					if single_packed_sequence.get("input_ids", np.array([])).any():
-						self.collected_samples_for_batch.append(single_packed_sequence)
-						if len(self.collected_samples_for_batch) >= self.target_batch_size:
-							self._send_batch()
-			self.leftover_text = original_text_for_this_attempt; return
+			if self._flush_internal_packer_to_batch():
+				self.leftover_text = original_text_for_this_attempt
+			else:
+				self.leftover_text = ""
+				self._hard_fail(
+					f"Objective '{objective_name}' could not run with an empty packer: {result.get('message', 'not enough space')}",
+					reason=f"{objective_name}:not_enough_space",
+				)
+			return
 
-		self.leftover_text = result.get("unused_input_string", "")
-		if result.get("status") != "ok": return
+		self._set_leftover(result.get("unused_input_string", ""), original_text_for_this_attempt)
+		if result.get("status") != "ok":
+			self._hard_fail(
+				f"Objective '{objective_name}' returned status={result.get('status')}: {result.get('message', 'no message')}",
+				reason=f"{objective_name}:{result.get('status', 'unknown_status')}",
+			)
+			return
 
 		input_ids = result.get("input_ids"); label_ids = result.get("label_ids")
-		if not (input_ids is not None and hasattr(input_ids, '__len__') and len(input_ids) > 0): return
+		if not (input_ids is not None and hasattr(input_ids, '__len__') and len(input_ids) > 0):
+			self._hard_fail(f"Objective '{objective_name}' produced empty input_ids.", reason=f"{objective_name}:empty_input_ids")
+			return
 		if label_ids is None: label_ids = []
 		
 		input_ids_np = np.array(input_ids, dtype=np.int32)
 		label_ids_np = np.array(label_ids, dtype=np.int32)
 
-		if input_ids_np.size > 0 and label_ids_np.size == 0: return
+		if input_ids_np.size > 0 and label_ids_np.size == 0:
+			self._hard_fail(f"Objective '{objective_name}' produced empty label_ids.", reason=f"{objective_name}:empty_label_ids")
+			return
 
 		try:
 			if not self.internal_packer.can_accept(input_ids_np, label_ids_np):
-				if self.internal_packer.packers[0].data_index > 0:
-					packed_data_from_internal_packer = self.internal_packer.pop(peek=False)
-					if packed_data_from_internal_packer:
-						single_packed_sequence = {k: v[0] for k, v in packed_data_from_internal_packer.items()}
-						if single_packed_sequence.get("input_ids", np.array([])).any():
-							self.collected_samples_for_batch.append(single_packed_sequence)
-							if len(self.collected_samples_for_batch) >= self.target_batch_size:
-								self._send_batch()
+				self._flush_internal_packer_to_batch()
 				if not self.internal_packer.can_accept(input_ids_np, label_ids_np):
-					self.leftover_text = original_text_for_this_attempt; return
+					self._hard_fail(
+						f"Objective '{objective_name}' produced a sample too large for sequence_length={self.sequence_length}: "
+						f"input_tokens={len(input_ids_np)}, label_tokens={len(label_ids_np)}.",
+						reason=f"{objective_name}:sample_too_large_for_packer",
+					)
+					return
 			
 			packer_status = self.internal_packer.add(input_ids_np, label_ids_np)
 		except ValueError as e_packer_add:
 			self._log_print(f"ValueError from internal_packer.add for '{objective_name}': {e_packer_add}", verbosity_level=0)
-			self.leftover_text = original_text_for_this_attempt; return
+			self._hard_fail(f"ValueError from internal_packer.add for '{objective_name}': {e_packer_add}", reason=f"{objective_name}:packer_add_failed")
+			return
 
 		if packer_status == "ready": # Internal packer (for one sequence) is ready
-			packed_data_from_internal_packer = self.internal_packer.pop(peek=False)
-			if packed_data_from_internal_packer:
-				single_packed_sequence = {k: v[0] for k, v in packed_data_from_internal_packer.items()}
-				if single_packed_sequence.get("input_ids", np.array([])).any():
-					self.collected_samples_for_batch.append(single_packed_sequence)
-					if len(self.collected_samples_for_batch) >= self.target_batch_size:
-						self._send_batch()
+			self._flush_internal_packer_to_batch()
 
 	def run(self, profile: bool = False):
 		self.rng = np.random.default_rng(self.base_rng_seed + self.worker_id + os.getpid() + int(time.time()*1000) % 100000)
@@ -366,7 +417,8 @@ class Worker:
 					time.sleep(0.005)
 		except KeyboardInterrupt: self.should_stop = True
 		except Exception as e:
-			self._log_print(f"Unhandled EXCEPTION: {e}", verbosity_level=0); traceback.print_exc(); self.should_stop = True
+			self._log_print(f"Unhandled EXCEPTION: {e}", verbosity_level=0); traceback.print_exc()
+			self._hard_fail(f"Unhandled worker exception: {e}", reason="unhandled_exception")
 		finally:
 			if profiler: profiler.disable()
 			self.close() # Flush any remaining collected samples

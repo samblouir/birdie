@@ -51,8 +51,8 @@ class NextTokenPredictionObjective(BaseObjective):
 		# Use the pre-tokenized paradigm from __init__
 		paradigm_toks = self.tokenized_paradigm
 
-		# Calculate remaining space for the main text, after accounting for paradigm tokens
-		space_for_text = config.remaining_space - len(paradigm_toks)
+		# The packer stores both prompt/input tokens and labels for NTP.
+		space_for_text = (config.remaining_space - len(paradigm_toks)) // 2
 		
 		slice_data = slice_text_by_remaining_space(
 			text=input_text,
